@@ -28,6 +28,11 @@ A focused, streamlined tool for bulk notification management.
 
 This tool is specialized for notification changes only. It's simpler and faster when you only need to add, replace, or remove notifications across multiple monitors. Use this when you don't need to modify other monitor properties.
 
+**Features:**
+- List mode: View tags and notifications for monitors without making changes
+- Add, replace, or remove notifications
+- Filter by tags, groups, and active status
+
 ---
 
 ## Supported Changes
@@ -61,10 +66,13 @@ Before any change, monitors can be filtered by:
 
 - Include monitors by tag(s)
 - Exclude monitors by tag(s)
-- **Tag matching mode:**
-  - `all` → monitor must contain all specified tags
+- **Tag matching mode:**  
+  - `all` → monitor must contain all specified tags  
   - `any` → monitor must contain at least one specified tag
-- Skip group (container) monitors
+- **Group filtering:**
+  - Skip group (container) monitors (default: No - groups are included by default)
+  - Only select group (container) monitors
+  - Group monitors are automatically detected by their structure (having `childrenIDs` or missing typical monitor fields)
 - Only modify active monitors
 
 ---
@@ -87,8 +95,8 @@ Before any change, monitors can be filtered by:
 ### macOS / Linux
 
 ```bash
-git clone <your-repo-url>
-cd <repo>
+git clone https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools
+cd Uptime.Kuma.Monitor.Tools
 
 python3 -m venv venv
 source venv/bin/activate
@@ -118,6 +126,11 @@ python3 kuma-bulk-editor.py
 
 This tool allows you to modify multiple monitor properties (notifications, intervals, retries, groups, tags, etc.) in a single operation.
 
+**Features:**
+- List mode: View tags, notifications, and groups for monitors without making changes
+- Modify multiple properties in one operation
+- Filter by tags, groups, and active status
+
 ### kuma-notifications-editor.py
 
 To run the notification-focused editor:
@@ -127,9 +140,10 @@ python3 kuma-notifications-editor.py
 ```
 
 This tool is streamlined for notification changes only. It's ideal when you only need to:
-- Add notifications to monitors
-- Replace all notifications on monitors
-- Remove notifications from monitors
+- **List** tags and notifications for monitors (no changes made)
+- **Add** notifications to monitors
+- **Replace** all notifications on monitors
+- **Remove** notifications from monitors
 
 **Which tool should I use?**
 
@@ -146,7 +160,9 @@ They will walk you through monitor selection, previewing changes (dry-run), and 
 You will be prompted for:
 
 1. **Uptime Kuma URL**  
-   Example: `https://kuma.example.com`
+   - You can enter the URL with or without the protocol
+   - Examples: `kuma.example.com` or `https://kuma.example.com`
+   - If no protocol is provided, you'll be prompted to choose `http` or `https` (defaults to `https`)
 2. **Username**
 3. **Password**
    - Hidden input
@@ -166,15 +182,54 @@ No credentials are written to disk or environment variables.
 > **Important:** The tool always follows the same safe workflow:
 
 1. Ask how to filter/select monitors
-2. Ask what you want to change
-3. Ask for new values
-4. Perform a dry-run
-   - Shows exactly what will change
-   - Shows before → after values
-5. Ask for confirmation
-6. Apply changes only if confirmed
+2. Ask what you want to change (or select "list" to view information)
+3. Ask for new values (skipped for list mode)
+4. Perform a dry-run or display list
+   - Shows exactly what will change (for modifications)
+   - Shows before → after values (for modifications)
+   - Shows current tags, notifications, and groups (for list mode)
+5. Ask for confirmation (for modifications)
+6. Apply changes only if confirmed (skipped for list mode)
+7. After completion, ask if you want to reselect options or exit
 
-If you answer No, nothing is written.
+**Reselection Loop:**
+- After any operation (successful changes, declined changes, or list view), you can choose to:
+  - **Reselect** → Start over with new filters/options (keeps you logged in)
+  - **Exit/Abort** → Exit the script cleanly
+- This allows you to perform multiple operations in one session without re-entering credentials
+- If you decline to apply changes or nothing needs to be changed, you can reselect instead of aborting
+
+### List Mode
+
+Both tools support a **list mode** that displays monitor information without making any changes:
+
+**kuma-notifications-editor.py:**
+- Select "list" as the notification action
+- Displays tags and notifications for all matching monitors
+
+**kuma-bulk-editor.py:**
+- Select "LIST: Show tags, notifications, and groups (no changes)" from the change menu
+- Displays tags, notifications, and groups for all matching monitors
+
+**List Output Example:**
+
+```text
+==== MONITOR LIST ====
+URL:        https://kuma.example.com
+User:       admin
+Found:      5 monitors
+======================================
+
+[1] api.example.com
+  Tags:        ['production', 'api']
+  Notifications: ['Email', 'Slack']
+  Group:        Infrastructure
+
+[2] web.example.com
+  Tags:        ['production', 'web']
+  Notifications: ['Email']
+  Group:        (none)
+```
 
 ### Dry-Run Output
 
