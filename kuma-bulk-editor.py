@@ -126,6 +126,23 @@ def generate_totp_from_secret(secret: str) -> str:
     return pyotp.TOTP(secret).now()
 
 
+def looks_like_invalid_token_error(ex: Exception) -> bool:
+    """
+    We can't rely on a specific exception class across versions.
+    Detect typical messages: AuthInvalidToken / invalid token / 2fa token invalid.
+    """
+    msg = (str(ex) or "").lower()
+    needles = [
+        "authinvalidtoken",
+        "invalid token",
+        "invalid totp",
+        "2fa",
+        "two-factor",
+        "otp",
+    ]
+    return any(n in msg for n in needles)
+
+
 # -------------------------
 # Kuma object helpers
 # -------------------------
@@ -233,19 +250,64 @@ def try_force_websocket(api: UptimeKumaApi) -> None:
         return
 
 
-def login_with_retries(api: UptimeKumaApi, user: str, password: str, token: str, retries: int) -> None:
-    last = None
-    for i in range(retries + 1):
+def login_with_token_retry(
+    api: UptimeKumaApi,
+    user: str,
+    password: str,
+    use_2fa: bool,
+    token_mode: str,                # "token" or "secret"
+    token_value: str,               # token OR secret (depending on mode)
+    max_attempts: int = 5,
+    sleep_seconds: float = 1.5,
+) -> str:
+    """
+    Returns the final token used (could be regenerated/prompted).
+    Keeps all other options unchanged and does not abort on token expiry.
+
+    Behavior:
+    - If 2FA secret mode: regenerate token on each attempt.
+    - If 2FA token mode: on invalid token, prompt for a new token.
+    - On transient errors/timeouts: retry without re-prompting options.
+    """
+    last_ex: Optional[Exception] = None
+
+    for attempt in range(1, max_attempts + 1):
         try:
-            api.login(user, password, token=token)
-            return
+            if not use_2fa:
+                api.login(user, password)
+                return ""
+            if token_mode == "secret":
+                # regenerate each attempt to avoid 30s window edge
+                fresh_token = generate_totp_from_secret(token_value)
+                api.login(user, password, token=fresh_token)
+                return fresh_token
+            else:
+                api.login(user, password, token=token_value)
+                return token_value
+
         except Exception as ex:
-            last = ex
-            if i >= retries:
-                raise
-            eprint(f"Login attempt {i+1} failed ({ex}). Retrying...")
-            time.sleep(1.5)
-    raise last  # pragma: no cover
+            last_ex = ex
+
+            # Handle likely invalid/expired token
+            if use_2fa and looks_like_invalid_token_error(ex):
+                eprint(f"Login failed (invalid/expired 2FA token). Attempt {attempt}/{max_attempts}.")
+                if token_mode == "token":
+                    # Ask for a fresh token without restarting the script
+                    token_value = prompt("Enter a NEW current 6-digit TOTP token").strip()
+                    if not token_value:
+                        eprint("ERROR: Token cannot be empty.")
+                        continue
+                else:
+                    # secret mode: just wait a moment and try again (next attempt regenerates)
+                    time.sleep(1.0)
+            else:
+                # Transient / other errors: retry a few times
+                eprint(f"Login error. Attempt {attempt}/{max_attempts}: {ex}")
+                time.sleep(sleep_seconds)
+
+    # If we got here, all attempts failed
+    eprint(f"ERROR: Login failed after {max_attempts} attempts: {last_ex}")
+    raise SystemExit(4)
 
 
 def call_with_retries(fn, retries: int, label: str):
@@ -340,18 +402,22 @@ def main() -> int:
         return 2
 
     # ---- 2FA (interactive, no leaks)
-    token = ""
     use_2fa = prompt_yes_no("Is 2FA enabled for this user?", default_yes=True)
+    token_mode = "token"
+    token_value = ""
+
     if use_2fa:
-        mode = prompt_choice("Provide 2FA as", ["token", "secret"], default="token")
-        if mode == "token":
-            token = prompt("Enter current 6-digit TOTP token").strip()
-        else:
-            totp_secret = getpass.getpass("Enter TOTP secret (BASE32, hidden input): ").strip()
-            if not totp_secret:
-                eprint("ERROR: TOTP secret cannot be empty.")
+        token_mode = prompt_choice("Provide 2FA as", ["token", "secret"], default="token")
+        if token_mode == "token":
+            token_value = prompt("Enter current 6-digit TOTP token").strip()
+            if not token_value:
+                eprint("ERROR: Token cannot be empty.")
                 return 2
-            token = generate_totp_from_secret(totp_secret)
+        else:
+            token_value = getpass.getpass("Enter TOTP secret (BASE32, hidden input): ").strip()
+            if not token_value:
+                eprint("ERROR: Secret cannot be empty.")
+                return 2
 
     # ---- Main loop: allow reselection after declining to apply
     while True:
@@ -424,7 +490,13 @@ def main() -> int:
                 target_group_name = prompt("Target Monitor Group name (must match existing group monitor name)").strip()
                 if not target_group_name:
                     eprint("ERROR: Group name cannot be empty.")
-                    return 2
+                    choice = prompt_choice("What would you like to do?", ["reselect", "abort"], default="reselect")
+                    if choice == "abort":
+                        print("Exiting.")
+                        return 0
+                    # If reselect, continue the loop
+                    print("\nReselecting options...\n")
+                    continue
 
         if CHANGE_TAGS in selected_changes:
             print("\n⚠️ Tags editing: API support can differ by Kuma version/library.")
@@ -433,7 +505,13 @@ def main() -> int:
             tag_names = parse_csv_list(prompt(f"Tag name(s) to {tag_action.upper()} (comma-separated)", default=""))
             if not tag_names:
                 eprint("ERROR: No tag names provided.")
-                return 2
+                choice = prompt_choice("What would you like to do?", ["reselect", "abort"], default="reselect")
+                if choice == "abort":
+                    print("Exiting.")
+                    return 0
+                # If reselect, continue the loop
+                print("\nReselecting options...\n")
+                continue
             print(f"\nYou chose to {tag_action.upper()} these tags: {tag_names}\n")
 
         # ---- Connect
@@ -444,12 +522,16 @@ def main() -> int:
             api.timeout = socket_timeout
             try_force_websocket(api)
 
-            try:
-                login_with_retries(api, user, password, token, retries)
-            except Exception as ex:
-                eprint(f"ERROR: Login failed: {ex}")
-                eprint("Tip: If this is intermittent behind a proxy, try again or increase timeouts/retries in the script.")
-                return 4
+            # login with retry; may update token_value if token mode and user re-enters
+            final_token_used = login_with_token_retry(
+                api=api,
+                user=user,
+                password=password,
+                use_2fa=use_2fa,
+                token_mode=token_mode,
+                token_value=token_value,
+                max_attempts=6,
+            )
 
             # Load notifications (needed for changing notifications or list mode)
             notif_name_map: Dict[str, Tuple[int, str]] = {}
@@ -656,7 +738,7 @@ def main() -> int:
                 print("\n==== DRY-RUN PLAN ====")
                 print(f"URL:           {url}")
                 print(f"User:          {user}")
-                print(f"2FA:           {'YES' if token else 'NO token'}")
+                print(f"2FA:           {'YES' if use_2fa else 'NO'}")
                 print(f"Filter include:{sorted(include_set) if include_set else '(none)'} (mode: {tag_mode})")
                 print(f"Filter exclude:{sorted(exclude_set) if exclude_set else '(none)'}")
                 if only_groups:
