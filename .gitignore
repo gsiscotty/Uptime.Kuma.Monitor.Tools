@@ -1,5 +1,107 @@
+# Python-specific
 venv/
 __pycache__/
 *.pyc
-.DS_Store
+*.pyo
+*.pyd
+.Python
+
+# Personal data and sensitive files
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+*.jks
+*.keystore
+*.secret
+*.token
+*.credential
+*.password
+*.passwd
+*.auth
+*.private
+*.confidential
+*.sensitive
+
+# API keys and secrets
+*api*key*
+*secret*
+*password*
+*credential*
+*.env.local
+*.env.*.local
 .env
+.env.*
+secrets/
+credentials/
+keys/
+*.secrets
+
+# Personal information files
+*personal*
+*private*
+*confidential*
+contacts.*
+addresses.*
+*.vcf
+*.contacts
+
+# Local configuration with personal data
+local.settings.json
+local.config.*
+*.local.*
+config.local.*
+settings.local.*
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.orig
+*.tmp
+*.swp
+*~
+
+# OS-specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-*
+*.code-workspace
+.project
+.classpath
+.settings/
+
+# Logs and temporary files
+*.log
+*.logs
+logs/
+tmp/
+temp/
+*.cache
+
+# Database files with potential personal data
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Archives that might contain personal data
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+*.dmg
+*.iso
