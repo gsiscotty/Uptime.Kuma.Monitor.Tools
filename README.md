@@ -55,6 +55,7 @@ You can change any combination of the following:
   - add
   - replace
   - remove
+  - cleanup duplicates (remove duplicate tag associations)
 
 > ⚠️ **Note:** Tag editing is guarded because API behavior depends on the Kuma version.
 
@@ -69,6 +70,11 @@ Before any change, monitors can be filtered by:
 - **Tag matching mode:**  
   - `all` → monitor must contain all specified tags  
   - `any` → monitor must contain at least one specified tag
+- **Monitor name filtering:**
+  - Filter by monitor name(s) (comma-separated)
+  - **Name matching mode:**
+    - `full` → monitor name must exactly match one of the provided names
+    - `partial` → monitor name must contain one of the provided substrings (case-insensitive)
 - **Group filtering:**
   - Skip group (container) monitors (default: No - groups are included by default)
   - Only select group (container) monitors
@@ -128,8 +134,10 @@ This tool allows you to modify multiple monitor properties (notifications, inter
 
 **Features:**
 - List mode: View tags, notifications, and groups for monitors without making changes
+- Detect and display duplicate tags in list mode
 - Modify multiple properties in one operation
-- Filter by tags, groups, and active status
+- Filter by tags, monitor names, groups, and active status
+- Tag cleanup mode: Remove duplicate tag associations automatically
 
 ### kuma-notifications-editor.py
 
@@ -181,16 +189,18 @@ No credentials are written to disk or environment variables.
 
 > **Important:** The tool always follows the same safe workflow:
 
-1. Ask how to filter/select monitors
-2. Ask what you want to change (or select "list" to view information)
-3. Ask for new values (skipped for list mode)
-4. Perform a dry-run or display list
+1. Authenticate with credentials (URL, username, password, 2FA if enabled)
+2. Select what you want to change (or select "list" to view information)
+3. Configure filters to select monitors (tags, name, groups, active status)
+4. Ask for new values (skipped for list mode and cleanup mode)
+5. Perform a dry-run or display list
    - Shows exactly what will change (for modifications)
    - Shows before → after values (for modifications)
    - Shows current tags, notifications, and groups (for list mode)
-5. Ask for confirmation (for modifications)
-6. Apply changes only if confirmed (skipped for list mode)
-7. After completion, ask if you want to reselect options or exit
+   - Shows duplicate tags with counts (for cleanup mode)
+6. Ask for confirmation (for modifications)
+7. Apply changes only if confirmed (skipped for list mode)
+8. After completion, ask if you want to reselect options or exit
 
 **Reselection Loop:**
 - After any operation (successful changes, declined changes, or list view), you can choose to:
@@ -210,6 +220,7 @@ Both tools support a **list mode** that displays monitor information without mak
 **kuma-bulk-editor.py:**
 - Select "LIST: Show tags, notifications, and groups (no changes)" from the change menu
 - Displays tags, notifications, and groups for all matching monitors
+- Automatically detects and highlights duplicate tags (same tag appearing multiple times on a monitor)
 
 **List Output Example:**
 
@@ -226,10 +237,18 @@ Found:      5 monitors
   Group:        Infrastructure
 
 [2] web.example.com
-  Tags:        ['production', 'web']
+  Tags:        ['production', 'web', 'production'] (x2 duplicates)
+  ⚠️ DUPLICATES: 'production' appears 2x
   Notifications: ['Email']
   Group:        (none)
 ```
+
+**Tag Cleanup Mode:**
+- Select "Tags: Cleanup duplicates" from the change menu
+- Scans monitors for duplicate tag associations (same tag ID appearing multiple times)
+- Shows a cleanup plan before execution
+- Removes all duplicate instances and re-adds exactly one instance per tag
+- Requires explicit confirmation (`CLEANUP`) before proceeding
 
 ### Dry-Run Output
 
@@ -263,6 +282,7 @@ Some actions require typed confirmation, not just y/N.
 |--------|----------------------|------|
 | Replace notifications | `REPLACE` | Both |
 | Modify tags | `TAGS` | `kuma-bulk-editor.py` only |
+| Cleanup duplicate tags | `CLEANUP` | `kuma-bulk-editor.py` only |
 | Clear monitor group | `CLEAR` | `kuma-bulk-editor.py` only |
 
 If the confirmation text does not match exactly, the operation is aborted.
