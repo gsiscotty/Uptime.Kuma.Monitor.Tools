@@ -79,6 +79,12 @@ Before any change, monitors can be filtered by:
   - Skip group (container) monitors (default: No - groups are included by default)
   - Only select group (container) monitors
   - Group monitors are automatically detected by their structure (having `childrenIDs` or missing typical monitor fields)
+- **Group membership filtering:**
+  - Filter by group name(s) (comma-separated)
+  - Selects monitors that belong to the specified group(s)
+  - Works alongside other filters (tags, name, active status)
+  - Empty = all monitors (no group membership filter applied)
+  - If a group name is not found, a warning is displayed with available groups
 - Only modify active monitors
 
 ---
@@ -136,7 +142,7 @@ This tool allows you to modify multiple monitor properties (notifications, inter
 - List mode: View tags, notifications, and groups for monitors without making changes
 - Detect and display duplicate tags in list mode
 - Modify multiple properties in one operation
-- Filter by tags, monitor names, groups, and active status
+- Filter by tags, monitor names, group membership, groups (type), and active status
 - Tag cleanup mode: Remove duplicate tag associations automatically
 
 ### kuma-notifications-editor.py
@@ -191,7 +197,7 @@ No credentials are written to disk or environment variables.
 
 1. Authenticate with credentials (URL, username, password, 2FA if enabled)
 2. Select what you want to change (or select "list" to view information)
-3. Configure filters to select monitors (tags, name, groups, active status)
+3. Configure filters to select monitors (tags, name, group membership, groups, active status)
 4. Ask for new values (skipped for list mode and cleanup mode)
 5. Perform a dry-run or display list
    - Shows exactly what will change (for modifications)

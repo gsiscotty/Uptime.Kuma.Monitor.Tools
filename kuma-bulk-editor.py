@@ -517,6 +517,7 @@ def main() -> int:
             name_match_mode = prompt_choice("Monitor name match mode", ["full", "partial"], default="partial")
         skip_groups = prompt_yes_no("Skip GROUP monitors (containers)?", default_yes=False)
         only_groups = prompt_yes_no("Only select GROUP monitors (containers)?", default_yes=False)
+        group_names_filter = parse_csv_list(prompt("Filter by group name(s) (comma-separated) - empty = ALL monitors", default=""))
         only_active = prompt_yes_no("Only modify ACTIVE monitors?", default_yes=False)
 
         include_set = {normalize(t) for t in include_tags if t.strip()}
@@ -622,6 +623,33 @@ def main() -> int:
 
             monitors = api.get_monitors()
             
+            # Build group maps (name -> id, id -> name) - needed for filtering
+            group_name_to_id: Dict[str, int] = {}
+            group_id_to_name: Dict[int, str] = {}
+            for m in monitors:
+                if is_group_monitor(m) and isinstance(m.get("id"), int):
+                    gid = int(m["id"])
+                    gname = str(m.get("name") or "").strip()
+                    if gname:
+                        group_name_to_id[normalize(gname)] = gid
+                        group_id_to_name[gid] = gname
+
+            # Build set of target group IDs from group names filter
+            target_group_ids: Set[int] = set()
+            if group_names_filter:
+                for group_name in group_names_filter:
+                    group_name_norm = normalize(group_name.strip())
+                    if group_name_norm in group_name_to_id:
+                        target_group_ids.add(group_name_to_id[group_name_norm])
+                    else:
+                        eprint(f"WARNING: Group name '{group_name}' not found. Available groups:")
+                        if group_id_to_name:
+                            for gid, gname in sorted(group_id_to_name.items()):
+                                eprint(f"  - {gname}")
+                        else:
+                            eprint("  (no groups found)")
+                        eprint("Monitors from this group will be excluded from the selection.")
+            
             # For cleanup mode, collect tags to get tag names for display
             cleanup_tag_id_to_obj: Dict[int, dict] = {}  # tag ID -> tag object (for cleanup display)
             cleanup_all_system_tags: Dict[str, dict] = {}  # normalized name -> tag object (for cleanup)
@@ -690,6 +718,12 @@ def main() -> int:
                     name_matches, _ = matches_monitor_name(name, name_filters, name_match_mode)
                     if not name_matches:
                         continue
+                    
+                    # Group membership filtering
+                    if target_group_ids:
+                        parent = m.get("parent")  # can be int or None
+                        if not isinstance(parent, int) or parent not in target_group_ids:
+                            continue
                     
                     # Find duplicate tags on this monitor
                     # Use EXACTLY the same method as LIST mode: get_monitor_tag_objects() and count by normalized name
@@ -790,6 +824,8 @@ def main() -> int:
                 
                 # Show cleanup plan
                 print(f"\n==== CLEANUP PLAN ====")
+                if group_names_filter:
+                    print(f"Group filter:  {group_names_filter}")
                 print(f"Found {len(cleanup_plan)} monitors with duplicate tags:\n")
                 
                 total_duplicates = 0
@@ -1028,6 +1064,22 @@ def main() -> int:
                         group_name_to_id[normalize(gname)] = gid
                         group_id_to_name[gid] = gname
 
+            # Build set of target group IDs from group names filter
+            target_group_ids: Set[int] = set()
+            if group_names_filter:
+                for group_name in group_names_filter:
+                    group_name_norm = normalize(group_name.strip())
+                    if group_name_norm in group_name_to_id:
+                        target_group_ids.add(group_name_to_id[group_name_norm])
+                    else:
+                        eprint(f"WARNING: Group name '{group_name}' not found. Available groups:")
+                        if group_id_to_name:
+                            for gid, gname in sorted(group_id_to_name.items()):
+                                eprint(f"  - {gname}")
+                        else:
+                            eprint("  (no groups found)")
+                        eprint("Monitors from this group will be excluded from the selection.")
+
             # For tags, try to create missing tags first
             if CHANGE_TAGS in selected_changes:
                 # Build mapping from normalized to original tag names
@@ -1136,6 +1188,12 @@ def main() -> int:
                 name_matches, match_type = matches_monitor_name(name, name_filters, name_match_mode)
                 if not name_matches:
                     continue
+
+                # Group membership filtering
+                if target_group_ids:
+                    parent_id = m.get("parent")  # can be int or None
+                    if not isinstance(parent_id, int) or parent_id not in target_group_ids:
+                        continue
 
                 # Group display
                 parent = m.get("parent")  # can be int or None
@@ -1379,6 +1437,8 @@ def main() -> int:
                 print(f"Found:         {len(list_results)} monitors")
                 if name_filters:
                     print(f"Name filter:   {name_filters} (mode: {name_match_mode})")
+                if group_names_filter:
+                    print(f"Group filter:  {group_names_filter}")
                 print("======================================\n")
                 
                 for mid, name, tags, notif_names_list, group_name, match_type, tag_counts in sorted(list_results, key=lambda x: x[1].lower()):
@@ -1424,6 +1484,8 @@ def main() -> int:
                     print(f"Group filter:  Only groups")
                 else:
                     print(f"Skip groups:   {skip_groups}")
+                if group_names_filter:
+                    print(f"Group filter:  {group_names_filter}")
                 print(f"Only active:   {only_active}")
                 print(f"Will change:   {len(plan)} monitors")
                 print("======================\n")
