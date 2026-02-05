@@ -168,6 +168,8 @@ The web interface is designed for deployment with Komodo. Simply point Komodo to
 | `LOCKOUT_DURATION` | Lockout duration in minutes | 15 |
 | `REQUIRE_2FA` | Force 2FA for all users | false |
 | `ALLOWED_IPS` | IP allowlist (comma-separated) | (all) |
+| `SESSION_COOKIE_SAMESITE` | Cookie SameSite (Lax, Strict, None) | Lax |
+| `TRUST_PROXY` | Trust X-Forwarded headers | true |
 | `UNSAFE_MODE` | Disable ALL security (external proxy) | false |
 | `TZ` | Timezone | UTC |
 
@@ -175,20 +177,50 @@ The web interface is designed for deployment with Komodo. Simply point Komodo to
 
 For production, use a reverse proxy (nginx, Traefik, Nginx Proxy Manager) with TLS.
 
-**For external proxy (NPM, Traefik on a different server):**
+### Security Levels
 
-Set `UNSAFE_MODE=true` - this disables all security restrictions.
+Start with Level 1 to get it working, then upgrade step-by-step.
 
+**Level 1: External Proxy (Get it Working)**
 ```yaml
 environment:
-  - SECRET_KEY=your-key-here
+  - SECRET_KEY=your-secure-key
   - UNSAFE_MODE=true
 ```
 
-**NPM configuration:**
+**Level 2: External Proxy (Secure)**
+```yaml
+environment:
+  - SECRET_KEY=your-secure-key
+  - SESSION_COOKIE_SECURE=true
+  - SESSION_COOKIE_SAMESITE=None
+  - TRUST_PROXY=true
+```
+
+**Level 3: Same-Server Proxy**
+```yaml
+environment:
+  - SECRET_KEY=your-secure-key
+  - SESSION_COOKIE_SECURE=true
+```
+
+**Level 4: Maximum Security (Direct Access)**
+```yaml
+environment:
+  - SECRET_KEY=your-secure-key
+  - SESSION_COOKIE_SECURE=true
+  - REQUIRE_2FA=true
+  - ALLOWED_IPS=192.168.1.0/24
+  - MAX_LOGIN_ATTEMPTS=3
+  - LOCKOUT_DURATION=30
+```
+
+### NPM Configuration
+
 1. Forward Hostname/IP: `<KMC server IP>`
 2. Forward Port: `5080`
 3. Enable **Websockets Support**
+4. SSL: Enable with Let's Encrypt or your certificate
 
 **Nginx (same server):**
 

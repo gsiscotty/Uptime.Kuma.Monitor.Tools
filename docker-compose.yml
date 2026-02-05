@@ -26,8 +26,12 @@ services:
       
       # Session settings
       - SESSION_LIFETIME=${SESSION_LIFETIME:-1800}
-      # Set to 'false' for local development without HTTPS
+      # Set to 'true' when behind HTTPS proxy
       - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-false}
+      # Set to 'None' for cross-origin proxy (requires SESSION_COOKIE_SECURE=true)
+      - SESSION_COOKIE_SAMESITE=${SESSION_COOKIE_SAMESITE:-Lax}
+      # Trust proxy headers (X-Forwarded-*)
+      - TRUST_PROXY=${TRUST_PROXY:-true}
       
       # Security settings
       - MAX_LOGIN_ATTEMPTS=${MAX_LOGIN_ATTEMPTS:-5}
