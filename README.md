@@ -13,6 +13,32 @@ A comprehensive toolkit for managing Uptime Kuma monitors - featuring a secure w
 - **Activity Logging** - Full audit trail of all actions
 - **Server Management** - Save and export server configurations
 
+## Screenshots
+
+### Login & Authentication
+| Login Page | Two-Factor Authentication |
+|:----------:|:-------------------------:|
+| ![Login](docs/screenshots/01-login.png) | ![2FA](docs/screenshots/02-2fa.png) |
+| *Secure login with session management* | *TOTP 2FA with recovery code option* |
+
+### Server Management
+![Saved Servers](docs/screenshots/03-servers.png)
+*Manage multiple Uptime Kuma server connections with import/export*
+
+### Monitor Filtering & Bulk Changes
+| Filter Monitors | Bulk Changes |
+|:---------------:|:------------:|
+| ![Filters](docs/screenshots/04-filters.png) | ![Bulk Changes](docs/screenshots/05-bulk-changes.png) |
+| *Filter by name, tags, groups, type, status* | *Apply changes to multiple monitors at once* |
+
+### System Management & Activity Log
+| Manage Tags | Activity Log |
+|:-----------:|:------------:|
+| ![Manage Tags](docs/screenshots/06-manage-tags.png) | ![Activity Log](docs/screenshots/07-activity-log.png) |
+| *Create, edit, delete tags and groups* | *Full audit trail with filtering and export* |
+
+---
+
 ## Core Principles
 
 - Always preview changes (dry-run first)
