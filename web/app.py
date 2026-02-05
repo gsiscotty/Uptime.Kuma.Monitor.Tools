@@ -1958,6 +1958,11 @@ def api_delete_monitors():
 main_bp = Blueprint('main', __name__)
 
 
+@main_bp.route('/health')
+def health():
+    """Health check endpoint for Docker/Kubernetes."""
+    return jsonify({'status': 'healthy', 'version': '1.5.0'}), 200
+
 @main_bp.route('/favicon.ico')
 def favicon():
     """Serve favicon for browsers requesting /favicon.ico."""
