@@ -1,5 +1,6 @@
 # =============================================================================
-# Docker Ignore - Exclude from build context
+# Kuma Management Console - Docker Ignore
+# Exclude from build context
 # =============================================================================
 
 # Git

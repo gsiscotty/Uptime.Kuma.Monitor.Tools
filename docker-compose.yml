@@ -41,6 +41,9 @@ services:
       # Relaxed security for reverse proxy setups (set to 'true' if behind nginx/traefik)
       - RELAXED_SECURITY=${RELAXED_SECURITY:-false}
       
+      # Disable all security headers (for external proxy servers)
+      - DISABLE_SECURITY_HEADERS=${DISABLE_SECURITY_HEADERS:-false}
+      
       # Timezone
       - TZ=${TZ:-UTC}
     

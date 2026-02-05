@@ -1,20 +1,29 @@
-# Uptime Kuma Bulk Tools
+# Kuma Management Console
 
-This repository provides interactive, safe-by-default CLI tools for managing large numbers of monitors in Uptime Kuma.
+A comprehensive toolkit for managing Uptime Kuma monitors - featuring a secure web interface and CLI tools for bulk operations.
 
-The tools are designed for operators who want control, visibility, and safety when performing bulk changes.
+**Version:** 1.0.0-beta
+
+## Features
+
+- **Web Interface** - Modern, responsive UI for managing monitors
+- **CLI Tools** - Interactive command-line tools for bulk operations
+- **Two-layer Security** - Web login + Kuma API authentication
+- **2FA Support** - TOTP with recovery codes
+- **Activity Logging** - Full audit trail of all actions
+- **Server Management** - Save and export server configurations
 
 ## Core Principles
 
-- 🔍 Always preview changes (dry-run first)
-- 🧠 Human confirmation before writing
-- 🔐 No hard-coded secrets
-- 📦 GitHub-safe by default
-- 🛑 Stop on first error (no partial changes)
+- Always preview changes (dry-run first)
+- Human confirmation before writing
+- No hard-coded secrets
+- GitHub-safe by default
+- Stop on first error (no partial changes)
 
 ---
 
-## Included Tools
+## CLI Tools
 
 ### kuma-bulk-editor.py
 
@@ -128,17 +137,18 @@ A secure, responsive web interface is available for managing Uptime Kuma monitor
 
 ```bash
 # Clone the repository
-git clone https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools
-cd Uptime.Kuma.Monitor.Tools
+git clone https://github.com/gsiscotty/kuma-management-console
+cd kuma-management-console
 
 # Copy and configure environment
 cp .env.example .env
-# Edit .env and set a secure SECRET_KEY
+# Edit .env and set a secure SECRET_KEY:
+# python -c "import secrets; print(secrets.token_hex(32))"
 
 # Build and run
-docker-compose up -d
+docker compose up -d
 
-# Access at http://localhost:5000
+# Access at http://localhost:5080
 ```
 
 On first access, you'll be prompted to create an admin account.
@@ -151,31 +161,57 @@ The web interface is designed for deployment with Komodo. Simply point Komodo to
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SECRET_KEY` | Session encryption key (required) | - |
+| `SECRET_KEY` | Session encryption key (**required**) | - |
 | `SESSION_LIFETIME` | Session timeout in seconds | 1800 |
+| `SESSION_COOKIE_SECURE` | Require HTTPS for cookies | false |
 | `MAX_LOGIN_ATTEMPTS` | Failed attempts before lockout | 5 |
 | `LOCKOUT_DURATION` | Lockout duration in minutes | 15 |
 | `REQUIRE_2FA` | Force 2FA for all users | false |
 | `ALLOWED_IPS` | IP allowlist (comma-separated) | (all) |
+| `RELAXED_SECURITY` | Loosen CSP for reverse proxies | false |
+| `DISABLE_SECURITY_HEADERS` | Remove all security headers (external proxy) | false |
+| `TZ` | Timezone | UTC |
 
 ### Reverse Proxy Setup
 
-For production, use a reverse proxy (nginx, Traefik, Synology) with TLS:
+For production, use a reverse proxy (nginx, Traefik, Nginx Proxy Manager) with TLS.
+
+**Security modes:**
+
+| Mode | Use Case |
+|------|----------|
+| Default | Direct access, no proxy |
+| `RELAXED_SECURITY=true` | Proxy on same server |
+| `DISABLE_SECURITY_HEADERS=true` | Proxy on separate server |
+
+**Nginx Proxy Manager (separate server):**
+
+1. Forward Hostname/IP: `<KMC server IP>`
+2. Forward Port: `5080`
+3. Enable **Websockets Support**
+4. Set `DISABLE_SECURITY_HEADERS=true` on KMC
+
+**Nginx (same server):**
 
 ```nginx
 server {
     listen 443 ssl http2;
-    server_name kuma-editor.example.com;
+    server_name kuma-console.example.com;
     
     ssl_certificate /path/to/cert.pem;
     ssl_certificate_key /path/to/key.pem;
     
     location / {
-        proxy_pass http://localhost:5000;
+        proxy_pass http://127.0.0.1:5080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # WebSocket support
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
 }
 ```
@@ -202,11 +238,11 @@ server {
 
 ## Installation
 
-### macOS / Linux
+### macOS / Linux (CLI Tools)
 
 ```bash
-git clone https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools
-cd Uptime.Kuma.Monitor.Tools
+git clone https://github.com/gsiscotty/kuma-management-console
+cd kuma-management-console
 
 python3 -m venv venv
 source venv/bin/activate
