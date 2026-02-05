@@ -9,6 +9,7 @@ from datetime import timedelta
 
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify, Blueprint
 from flask_wtf.csrf import CSRFProtect
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from .models import db, User, AuditLog, KumaSession, SavedServer, AppSettings
 from .auth import (
@@ -58,12 +59,25 @@ def create_app(config=None):
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     
     # Session configuration
-    app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SESSION_COOKIE_SECURE', 'true').lower() == 'true'
+    app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SESSION_COOKIE_SECURE', 'false').lower() == 'true'
     app.config['SESSION_COOKIE_HTTPONLY'] = True
-    app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+    # Use 'None' for cross-origin proxy, 'Lax' for same-origin
+    samesite = os.environ.get('SESSION_COOKIE_SAMESITE', 'Lax')
+    app.config['SESSION_COOKIE_SAMESITE'] = samesite if samesite != 'None' else None
     app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(
         seconds=int(os.environ.get('SESSION_LIFETIME', 1800))
     )
+    
+    # Proxy configuration - trust X-Forwarded-* headers
+    if os.environ.get('TRUST_PROXY', 'true').lower() == 'true':
+        app.wsgi_app = ProxyFix(
+            app.wsgi_app,
+            x_for=1,       # Trust X-Forwarded-For
+            x_proto=1,     # Trust X-Forwarded-Proto
+            x_host=1,      # Trust X-Forwarded-Host
+            x_port=1,      # Trust X-Forwarded-Port
+            x_prefix=1     # Trust X-Forwarded-Prefix
+        )
     
     # Security settings
     app.config['MAX_LOGIN_ATTEMPTS'] = int(os.environ.get('MAX_LOGIN_ATTEMPTS', 5))
