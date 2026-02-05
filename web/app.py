@@ -1958,6 +1958,11 @@ def api_delete_monitors():
 main_bp = Blueprint('main', __name__)
 
 
+@main_bp.route('/favicon.ico')
+def favicon():
+    """Serve favicon for browsers requesting /favicon.ico."""
+    return redirect(url_for('static', filename='favicon.svg'))
+
 @main_bp.route('/')
 @login_required
 def index():

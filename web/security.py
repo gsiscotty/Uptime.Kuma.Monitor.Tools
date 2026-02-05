@@ -48,11 +48,8 @@ def add_security_headers(response):
     # Check if running behind a proxy (relaxed security mode)
     relaxed_mode = os.environ.get('RELAXED_SECURITY', 'false').lower() == 'true'
     
-    # Prevent clickjacking (allow framing if behind proxy)
-    if relaxed_mode:
-        response.headers['X-Frame-Options'] = 'SAMEORIGIN'
-    else:
-        response.headers['X-Frame-Options'] = 'DENY'
+    # Prevent clickjacking
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
     
     # Prevent MIME type sniffing
     response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -84,7 +81,7 @@ def add_security_headers(response):
             "img-src 'self' data:; "
             "font-src 'self' https://fonts.gstatic.com; "
             "connect-src 'self'; "
-            "frame-ancestors 'none'; "
+            "frame-ancestors 'self'; "
             "form-action 'self'; "
             "base-uri 'self'"
         )

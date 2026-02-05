@@ -2,7 +2,7 @@
 
 A comprehensive toolkit for managing Uptime Kuma monitors - featuring a secure web interface and CLI tools for bulk operations.
 
-**Version:** 1.5.0
+**Version:** 1.0.0-beta
 
 ## Features
 
