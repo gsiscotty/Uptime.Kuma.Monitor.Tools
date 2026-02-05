@@ -1,14 +1,14 @@
 # =============================================================================
-# Kuma Bulk Editor - Docker Compose
+# Kuma Management Console - Docker Compose
 # For local development and Komodo deployment
 # =============================================================================
 
 services:
-  kuma-editor:
+  kuma-console:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: kuma-bulk-editor
+    container_name: kuma-management-console
     restart: unless-stopped
     
     # Port mapping (use reverse proxy in production)
@@ -43,7 +43,7 @@ services:
     
     # Persistent storage for user database
     volumes:
-      - kuma_editor_data:/app/data
+      - kuma_console_data:/app/data
     
     # Resource limits
     deploy:
@@ -69,5 +69,5 @@ services:
 
 # Named volume for persistent data
 volumes:
-  kuma_editor_data:
+  kuma_console_data:
     driver: local

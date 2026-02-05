@@ -1,5 +1,5 @@
 # =============================================================================
-# Kuma Bulk Editor - Docker Image
+# Kuma Management Console - Docker Image
 # Multi-stage build for smaller image size
 # =============================================================================
 
@@ -33,8 +33,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # -----------------------------------------------------------------------------
 FROM python:3.12-slim
 
-LABEL maintainer="Kuma Bulk Editor"
-LABEL description="Secure web interface for Uptime Kuma bulk operations"
+LABEL maintainer="gsiscotty"
+LABEL description="Kuma Management Console - Web interface for Uptime Kuma management"
+LABEL version="1.0.0-beta"
 
 WORKDIR /app
 
