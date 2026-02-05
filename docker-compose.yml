@@ -41,14 +41,9 @@ services:
       # Relaxed security for reverse proxy setups (set to 'true' if behind nginx/traefik)
       - RELAXED_SECURITY=${RELAXED_SECURITY:-false}
       
-      # Disable all security headers (for external proxy servers)
-      - DISABLE_SECURITY_HEADERS=${DISABLE_SECURITY_HEADERS:-false}
-      
-      # Trust proxy headers (X-Forwarded-*)
-      - TRUST_PROXY=${TRUST_PROXY:-true}
-      
-      # Session cookie SameSite policy (Lax, Strict, or None for cross-origin)
-      - SESSION_COOKIE_SAMESITE=${SESSION_COOKIE_SAMESITE:-Lax}
+      # UNSAFE_MODE: Disable ALL security (for external proxy servers)
+      # This disables: security headers, CSRF, cookie restrictions, IP filtering
+      - UNSAFE_MODE=${UNSAFE_MODE:-false}
       
       # Timezone
       - TZ=${TZ:-UTC}

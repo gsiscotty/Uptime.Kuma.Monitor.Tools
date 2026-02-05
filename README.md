@@ -168,28 +168,27 @@ The web interface is designed for deployment with Komodo. Simply point Komodo to
 | `LOCKOUT_DURATION` | Lockout duration in minutes | 15 |
 | `REQUIRE_2FA` | Force 2FA for all users | false |
 | `ALLOWED_IPS` | IP allowlist (comma-separated) | (all) |
-| `RELAXED_SECURITY` | Loosen CSP for reverse proxies | false |
-| `DISABLE_SECURITY_HEADERS` | Remove all security headers (external proxy) | false |
+| `UNSAFE_MODE` | Disable ALL security (external proxy) | false |
 | `TZ` | Timezone | UTC |
 
 ### Reverse Proxy Setup
 
 For production, use a reverse proxy (nginx, Traefik, Nginx Proxy Manager) with TLS.
 
-**Security modes:**
+**For external proxy (NPM, Traefik on a different server):**
 
-| Mode | Use Case |
-|------|----------|
-| Default | Direct access, no proxy |
-| `RELAXED_SECURITY=true` | Proxy on same server |
-| `DISABLE_SECURITY_HEADERS=true` | Proxy on separate server |
+Set `UNSAFE_MODE=true` - this disables all security restrictions.
 
-**Nginx Proxy Manager (separate server):**
+```yaml
+environment:
+  - SECRET_KEY=your-key-here
+  - UNSAFE_MODE=true
+```
 
+**NPM configuration:**
 1. Forward Hostname/IP: `<KMC server IP>`
 2. Forward Port: `5080`
 3. Enable **Websockets Support**
-4. Set `DISABLE_SECURITY_HEADERS=true` on KMC
 
 **Nginx (same server):**
 

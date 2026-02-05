@@ -53,26 +53,38 @@ def create_app(config=None):
         static_url_path='/static'
     )
     
+    # UNSAFE_MODE: Disable ALL security for external proxy setups
+    unsafe_mode = os.environ.get('UNSAFE_MODE', 'false').lower() == 'true'
+    
     # Configuration
     app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
     app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///data/users.db')
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     
     # Session configuration
-    app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SESSION_COOKIE_SECURE', 'false').lower() == 'true'
-    app.config['SESSION_COOKIE_HTTPONLY'] = True
-    # Use 'None' for cross-origin proxy, 'Lax' for same-origin
-    samesite = os.environ.get('SESSION_COOKIE_SAMESITE', 'Lax')
-    app.config['SESSION_COOKIE_SAMESITE'] = samesite if samesite != 'None' else None
+    if unsafe_mode:
+        # Disable all cookie security for proxy compatibility
+        app.config['SESSION_COOKIE_SECURE'] = False
+        app.config['SESSION_COOKIE_HTTPONLY'] = False
+        app.config['SESSION_COOKIE_SAMESITE'] = None
+        app.config['WTF_CSRF_ENABLED'] = False
+        # Also set these env vars for other components
+        os.environ['DISABLE_SECURITY_HEADERS'] = 'true'
+    else:
+        app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SESSION_COOKIE_SECURE', 'false').lower() == 'true'
+        app.config['SESSION_COOKIE_HTTPONLY'] = True
+        samesite = os.environ.get('SESSION_COOKIE_SAMESITE', 'Lax')
+        app.config['SESSION_COOKIE_SAMESITE'] = samesite if samesite != 'None' else None
+    
     app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(
         seconds=int(os.environ.get('SESSION_LIFETIME', 1800))
     )
     
     # Proxy configuration - trust X-Forwarded-* headers
-    if os.environ.get('TRUST_PROXY', 'true').lower() == 'true':
+    if unsafe_mode or os.environ.get('TRUST_PROXY', 'true').lower() == 'true':
         app.wsgi_app = ProxyFix(
             app.wsgi_app,
-            x_for=1,       # Trust X-Forwarded-For
+            x_for=2,       # Trust X-Forwarded-For (2 levels for chained proxies)
             x_proto=1,     # Trust X-Forwarded-Proto
             x_host=1,      # Trust X-Forwarded-Host
             x_port=1,      # Trust X-Forwarded-Port
@@ -83,7 +95,7 @@ def create_app(config=None):
     app.config['MAX_LOGIN_ATTEMPTS'] = int(os.environ.get('MAX_LOGIN_ATTEMPTS', 5))
     app.config['LOCKOUT_DURATION'] = int(os.environ.get('LOCKOUT_DURATION', 15))
     app.config['REQUIRE_2FA'] = os.environ.get('REQUIRE_2FA', 'false').lower() == 'true'
-    app.config['ALLOWED_IPS'] = os.environ.get('ALLOWED_IPS', '')
+    app.config['ALLOWED_IPS'] = '' if unsafe_mode else os.environ.get('ALLOWED_IPS', '')
     app.config['ALLOW_LOCALHOST'] = os.environ.get('ALLOW_LOCALHOST', 'true').lower() == 'true'
     
     # Apply any passed config
@@ -92,7 +104,11 @@ def create_app(config=None):
     
     # Initialize extensions
     db.init_app(app)
-    CSRFProtect(app)
+    
+    # CSRF protection (disabled in unsafe mode)
+    if not unsafe_mode:
+        CSRFProtect(app)
+    
     limiter.init_app(app)
     
     # Create tables

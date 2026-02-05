@@ -33,10 +33,11 @@ def add_security_headers(response):
     """Add security headers to response."""
     import os
     
-    # Check if security headers are disabled (for reverse proxy setups)
+    # Check if security headers are disabled (UNSAFE_MODE or explicit disable)
+    unsafe_mode = os.environ.get('UNSAFE_MODE', 'false').lower() == 'true'
     disable_security = os.environ.get('DISABLE_SECURITY_HEADERS', 'false').lower() == 'true'
     
-    if disable_security:
+    if unsafe_mode or disable_security:
         # Only add cache control for dynamic pages
         if request.endpoint and 'static' not in request.endpoint:
             response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, private'
