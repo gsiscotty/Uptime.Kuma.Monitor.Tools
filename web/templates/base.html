@@ -49,8 +49,9 @@
         <div class="navbar-menu">
             {% if session.get('kuma_connected') %}
             <a href="{{ url_for('main.editor') }}" class="connection-status connected" id="connection-status" data-url="{{ session.get('kuma_url', '') }}" title="Go to editor">
-                <span class="status-dot" id="status-dot">●</span> 
-                Selected server: <strong>{{ session.get('kuma_server_name', session.get('kuma_url', 'Kuma')) | truncate(25) }}</strong>
+                <span class="status-dot" id="status-dot"></span>
+                <span class="status-label">Selected server</span>
+                <span class="status-value">{{ session.get('kuma_server_name', session.get('kuma_url', 'Kuma')) | truncate(25) }}</span>
             </a>
             <button type="button" class="btn btn-sm btn-primary" onclick="reconnectToKuma()" id="reconnect-btn" title="Reconnect for fresh data">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -59,7 +60,7 @@
                 </svg>
                 Reconnect
             </button>
-            <a href="{{ url_for('kuma.disconnect') }}" class="btn btn-sm btn-ghost">
+            <a href="{{ url_for('kuma.disconnect') }}" class="btn btn-sm disconnect-btn">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
                     <line x1="12" y1="2" x2="12" y2="12"/>
@@ -68,7 +69,9 @@
             </a>
             {% else %}
             <span class="connection-status disconnected" id="connection-status">
-                <span class="status-dot">●</span> Not connected
+                <span class="status-dot"></span>
+                <span class="status-label">Connection</span>
+                <span class="status-value">Not connected</span>
             </span>
             {% endif %}
             <a href="{{ url_for('auth.activity_log') }}" class="btn btn-sm btn-ghost">Activity</a>

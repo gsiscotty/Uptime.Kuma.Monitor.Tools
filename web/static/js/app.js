@@ -457,27 +457,20 @@ function renderMonitors(monitorsToRender) {
                        ${selectedMonitors.has(m.id) ? 'checked' : ''}
                        onclick="event.stopPropagation(); toggleMonitor(${m.id})">
             </div>
-            <div class="monitor-content">
+            <div class="monitor-type-icon">${getMonitorTypeIcon(m.type, m.isGroup)}</div>
+            <div class="monitor-info">
                 <div class="monitor-header">
-                    <div class="monitor-name">
-                        ${m.isGroup ? '<span class="type-badge group">📁 Group</span>' : `<span class="type-badge">${escapeHtml(m.type || 'http')}</span>`}
-                        <span class="name-text">${escapeHtml(m.name)}</span>
-                        ${!m.active ? '<span class="status-badge inactive">Paused</span>' : '<span class="status-badge active">Active</span>'}
-                    </div>
+                    <span class="monitor-name">${escapeHtml(m.name)}</span>
+                    <span class="monitor-status ${m.active ? 'status-active' : 'status-paused'}">${m.active ? 'Active' : 'Paused'}</span>
                 </div>
                 <div class="monitor-details">
-                    ${m.url ? `<div class="detail-item"><span class="detail-label">URL:</span> <span class="detail-value url">${escapeHtml(m.url.substring(0, 50))}${m.url.length > 50 ? '...' : ''}</span></div>` : ''}
-                    ${m.group ? `<div class="detail-item"><span class="detail-label">Group:</span> <span class="detail-value">${escapeHtml(m.group)}</span></div>` : ''}
-                    <div class="detail-item"><span class="detail-label">Interval:</span> <span class="detail-value">${m.interval || 60}s</span></div>
-                    ${m.maxretries ? `<div class="detail-item"><span class="detail-label">Retries:</span> <span class="detail-value">${m.maxretries}</span></div>` : ''}
+                    ${m.group ? `<span class="monitor-detail"><span class="monitor-detail-label">Group:</span> <span class="monitor-detail-value">${escapeHtml(m.group)}</span></span>` : ''}
+                    <span class="monitor-detail"><span class="monitor-detail-label">Interval:</span> <span class="monitor-detail-value">${m.interval || 60}s</span></span>
+                    <span class="monitor-detail"><span class="monitor-detail-label">Retries:</span> <span class="monitor-detail-value">${m.maxretries || 0}</span></span>
                 </div>
-                <div class="monitor-footer">
-                    <div class="monitor-tags">
-                        ${renderTags(m.tags)}
-                    </div>
-                    <div class="monitor-notifications">
-                        ${renderNotifications(m.notifications)}
-                    </div>
+                <div class="monitor-tags">
+                    ${renderTags(m.tags)}
+                    ${renderNotifications(m.notifications)}
                 </div>
             </div>
         </div>
@@ -487,18 +480,18 @@ function renderMonitors(monitorsToRender) {
 }
 
 function renderTags(tagList) {
-    if (!tagList || tagList.length === 0) return '<span class="no-data">No tags</span>';
+    if (!tagList || tagList.length === 0) return '';
     
-    const maxVisible = 3;
+    const maxVisible = 4;
     const visible = tagList.slice(0, maxVisible);
     const hidden = tagList.length - maxVisible;
     
     let html = visible.map(t => 
-        `<span class="monitor-tag">${escapeHtml(t)}</span>`
+        `<span class="tag"><span class="tag-icon">🏷️</span>${escapeHtml(t)}</span>`
     ).join('');
     
     if (hidden > 0) {
-        html += `<span class="monitor-tag more">+${hidden}</span>`;
+        html += `<span class="tag" title="${tagList.slice(maxVisible).join(', ')}"><span class="tag-icon">🏷️</span>+${hidden}</span>`;
     }
     
     return html;
@@ -506,7 +499,7 @@ function renderTags(tagList) {
 
 function renderNotifications(notifIds) {
     if (!notifIds || notifIds.length === 0) {
-        return '<span class="no-data no-notifications">No notifications</span>';
+        return '';
     }
     
     const maxVisible = 2;
@@ -519,18 +512,18 @@ function renderNotifications(notifIds) {
     const hidden = notifNames.length - maxVisible;
     
     let html = visible.map(name => 
-        `<span class="notif-badge">${escapeHtml(name)}</span>`
+        `<span class="tag tag-notification"><span class="tag-icon">🔔</span>${escapeHtml(name)}</span>`
     ).join('');
     
     if (hidden > 0) {
         const hiddenNames = notifNames.slice(maxVisible).join(', ');
-        html += `<span class="notif-badge more" title="${escapeHtml(hiddenNames)}">+${hidden} more</span>`;
+        html += `<span class="tag tag-notification" title="${escapeHtml(hiddenNames)}"><span class="tag-icon">🔔</span>+${hidden}</span>`;
     }
     
     return html;
 }
 
-// Add more styles
+// Add animation styles (rest is in external CSS)
 const monitorStyles = document.createElement('style');
 monitorStyles.textContent = `
     .empty-state {
@@ -540,6 +533,7 @@ monitorStyles.textContent = `
         justify-content: center;
         padding: 3rem;
         text-align: center;
+        color: var(--text-muted);
     }
     .empty-icon {
         font-size: 3rem;
@@ -549,162 +543,6 @@ monitorStyles.textContent = `
     .monitor-item {
         animation: fadeIn 0.3s ease forwards;
         opacity: 0;
-        display: flex;
-        gap: 1rem;
-        padding: 1rem;
-        background: var(--bg-card);
-        border: 1px solid var(--border-color);
-        border-radius: var(--radius-md);
-        margin-bottom: 0.75rem;
-        cursor: pointer;
-        transition: all 0.2s ease;
-    }
-    .monitor-item:hover {
-        border-color: var(--primary);
-        background: var(--bg-hover);
-    }
-    .monitor-item.selected {
-        border-color: var(--primary);
-        background: rgba(16, 185, 129, 0.1);
-        box-shadow: 0 0 0 1px var(--primary);
-    }
-    .monitor-checkbox {
-        display: flex;
-        align-items: flex-start;
-        padding-top: 0.25rem;
-    }
-    .monitor-checkbox input[type="checkbox"] {
-        width: 18px;
-        height: 18px;
-        cursor: pointer;
-    }
-    .monitor-content {
-        flex: 1;
-        min-width: 0;
-    }
-    .monitor-header {
-        margin-bottom: 0.5rem;
-    }
-    .monitor-name {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        flex-wrap: wrap;
-    }
-    .name-text {
-        font-weight: 600;
-        font-size: 1rem;
-        color: var(--text-primary);
-    }
-    .type-badge {
-        display: inline-flex;
-        align-items: center;
-        padding: 2px 8px;
-        font-size: 0.7rem;
-        border-radius: 4px;
-        background: var(--bg-hover);
-        color: var(--text-muted);
-        font-weight: 500;
-        text-transform: uppercase;
-    }
-    .type-badge.group {
-        background: rgba(139, 92, 246, 0.2);
-        color: #a78bfa;
-    }
-    .status-badge {
-        display: inline-flex;
-        align-items: center;
-        padding: 2px 8px;
-        font-size: 0.65rem;
-        border-radius: 9999px;
-        font-weight: 600;
-        text-transform: uppercase;
-    }
-    .status-badge.active {
-        background: rgba(16, 185, 129, 0.2);
-        color: var(--primary);
-    }
-    .status-badge.inactive {
-        background: rgba(245, 158, 11, 0.2);
-        color: var(--warning);
-    }
-    .monitor-details {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.5rem 1.5rem;
-        margin-bottom: 0.75rem;
-        font-size: 0.8125rem;
-    }
-    .detail-item {
-        display: flex;
-        align-items: center;
-        gap: 0.25rem;
-    }
-    .detail-label {
-        color: var(--text-muted);
-    }
-    .detail-value {
-        color: var(--text-secondary);
-    }
-    .detail-value.url {
-        font-family: monospace;
-        font-size: 0.75rem;
-        color: var(--primary-light);
-    }
-    .monitor-footer {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        gap: 1rem;
-        flex-wrap: wrap;
-    }
-    .monitor-tags {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.375rem;
-        flex: 1;
-    }
-    .monitor-notifications {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.375rem;
-        justify-content: flex-end;
-    }
-    .notif-badge {
-        display: inline-flex;
-        align-items: center;
-        padding: 2px 8px;
-        font-size: 0.7rem;
-        border-radius: 4px;
-        background: rgba(59, 130, 246, 0.2);
-        color: #60a5fa;
-        font-weight: 500;
-    }
-    .notif-badge.more {
-        background: rgba(59, 130, 246, 0.3);
-        cursor: help;
-    }
-    .no-data {
-        font-size: 0.75rem;
-        color: var(--text-muted);
-        font-style: italic;
-    }
-    .no-data.no-notifications {
-        color: rgba(239, 68, 68, 0.7);
-    }
-    .monitor-tag {
-        display: inline-flex;
-        align-items: center;
-        padding: 2px 8px;
-        font-size: 0.7rem;
-        border-radius: 4px;
-        background: var(--bg-hover);
-        color: var(--text-secondary);
-    }
-    .monitor-tag.more {
-        background: var(--primary);
-        color: white;
-        font-weight: 600;
     }
     @keyframes fadeIn {
         to { opacity: 1; }
@@ -2542,6 +2380,34 @@ function toggleMobileMenu() {
 // =============================================================================
 // Utilities
 // =============================================================================
+function getMonitorTypeIcon(type, isGroup) {
+    if (isGroup) return '📁';
+    const icons = {
+        'http': '🌐',
+        'https': '🔒',
+        'keyword': '🔍',
+        'grpc-keyword': '📡',
+        'ping': '📶',
+        'port': '🔌',
+        'push': '📤',
+        'steam': '🎮',
+        'gamedig': '🎯',
+        'mqtt': '📨',
+        'mongodb': '🍃',
+        'sqlserver': '🗄️',
+        'postgres': '🐘',
+        'mysql': '🐬',
+        'redis': '📕',
+        'docker': '🐳',
+        'dns': '📋',
+        'radius': '🔐',
+        'json-query': '📊',
+        'real-browser': '🖥️',
+        'tailscale-ping': '🦎',
+    };
+    return icons[type?.toLowerCase()] || '📡';
+}
+
 function escapeHtml(text) {
     if (!text) return '';
     const div = document.createElement('div');

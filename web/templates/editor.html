@@ -7,8 +7,10 @@
         <h1>{{ kuma_server_name or kuma_url }}</h1>
         <div class="editor-header-row">
             <div class="connection-info">
-                <p>Server: <a href="{{ kuma_url }}" target="_blank" class="link-accent">{{ kuma_url }}</a></p>
-                <p>Connected as <strong>{{ kuma_username }}</strong></p>
+                <p class="connection-url">
+                    Server: <a href="{{ kuma_url }}" target="_blank" class="link-accent">{{ kuma_url }}</a>
+                </p>
+                <p>Connected as <strong class="connection-username">{{ kuma_username }}</strong></p>
             </div>
             <div class="editor-header-actions">
                 <button type="button" class="btn btn-secondary btn-sm" onclick="openManageTagsModal()">
