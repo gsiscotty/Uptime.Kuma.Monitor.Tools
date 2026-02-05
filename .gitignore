@@ -34,10 +34,14 @@ __pycache__/
 *.env.*.local
 .env
 .env.*
+!.env.example
 secrets/
 credentials/
 keys/
 *.secrets
+
+# Web app data directory
+data/
 
 # Personal information files
 *personal*

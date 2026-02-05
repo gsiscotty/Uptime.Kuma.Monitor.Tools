@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}2FA Recovery - Kuma Management Console{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+    <div class="auth-card">
+        <div class="auth-header">
+            <div class="auth-logo">
+                <svg viewBox="0 0 48 48" width="64" height="64" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="24" cy="24" r="20" fill="#8b5cf6"/>
+                    <circle cx="10" cy="12" r="6" fill="#8b5cf6"/>
+                    <circle cx="38" cy="12" r="6" fill="#8b5cf6"/>
+                    <circle cx="10" cy="12" r="3" fill="#a78bfa"/>
+                    <circle cx="38" cy="12" r="3" fill="#a78bfa"/>
+                    <ellipse cx="24" cy="26" rx="14" ry="12" fill="#c4b5fd"/>
+                    <circle cx="18" cy="22" r="3" fill="#1e1b4b"/>
+                    <circle cx="30" cy="22" r="3" fill="#1e1b4b"/>
+                    <circle cx="19" cy="21" r="1" fill="white"/>
+                    <circle cx="31" cy="21" r="1" fill="white"/>
+                    <ellipse cx="24" cy="28" rx="2" ry="1.5" fill="#7c3aed"/>
+                    <path d="M20 32 Q24 36 28 32" stroke="#7c3aed" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+                    <path d="M16 38 L20 38 L22 34 L24 42 L26 36 L28 38 L32 38" stroke="#22c55e" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </div>
+            <h1>2FA Recovery</h1>
+            <p>Use a recovery code to regain access</p>
+        </div>
+
+        <div class="recovery-info">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="16" x2="12" y2="12"></line>
+                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+            </svg>
+            <p>Enter one of your recovery codes to disable 2FA and regain access to your account. Each code can only be used once.</p>
+        </div>
+
+        <form method="POST" class="auth-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" 
+                       id="username" 
+                       name="username" 
+                       class="form-input" 
+                       placeholder="Enter username"
+                       autocomplete="username"
+                       value="{{ username or '' }}"
+                       required
+                       {% if not username %}autofocus{% endif %}>
+            </div>
+
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" 
+                       id="password" 
+                       name="password" 
+                       class="form-input" 
+                       placeholder="Enter password"
+                       autocomplete="current-password"
+                       required>
+            </div>
+
+            <div class="form-group">
+                <label for="recovery_code">Recovery Code</label>
+                <input type="text" 
+                       id="recovery_code" 
+                       name="recovery_code" 
+                       class="form-input recovery-code-input" 
+                       placeholder="XXXXXXXX"
+                       autocomplete="off"
+                       maxlength="8"
+                       pattern="[A-Fa-f0-9]{8}"
+                       {% if username %}autofocus{% endif %}
+                       required>
+                <small class="form-help">Enter one of your 8-character recovery codes</small>
+            </div>
+
+            <button type="submit" class="btn btn-primary btn-block">
+                Recover Account
+            </button>
+        </form>
+
+        <div class="auth-footer">
+            {% if request.is_secure or request.headers.get('X-Forwarded-Proto') == 'https' %}
+            <p class="security-note secure">
+                🔒 This connection is secure
+            </p>
+            {% else %}
+            <p class="security-note insecure">
+                ⚠️ This connection is not secure
+            </p>
+            <p class="security-warning">
+                You are using HTTP. For production use, please use a reverse proxy with HTTPS.
+            </p>
+            {% endif %}
+            <a href="{{ url_for('auth.login') }}" class="auth-link">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="19" y1="12" x2="5" y2="12"></line>
+                    <polyline points="12 19 5 12 12 5"></polyline>
+                </svg>
+                Back to Login
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %}

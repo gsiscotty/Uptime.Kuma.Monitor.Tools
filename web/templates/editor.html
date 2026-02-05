@@ -1,0 +1,495 @@
+{% extends "base.html" %}
+{% block title %}{{ kuma_server_name or 'Editor' }} - Kuma Management Console{% endblock %}
+
+{% block content %}
+<div class="editor-container" id="app">
+    <div class="editor-header">
+        <h1>{{ kuma_server_name or kuma_url }}</h1>
+        <div class="editor-header-row">
+            <div class="connection-info">
+                <p>Server: <a href="{{ kuma_url }}" target="_blank" class="link-accent">{{ kuma_url }}</a></p>
+                <p>Connected as <strong>{{ kuma_username }}</strong></p>
+            </div>
+            <div class="editor-header-actions">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="openManageTagsModal()">
+                    🏷️ Manage Tags
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="openManageGroupsModal()">
+                    📁 Manage Groups
+                </button>
+                <button type="button" class="btn btn-danger btn-sm" onclick="openDeleteMonitorsModal()" id="delete-monitors-btn">
+                    🗑️ Delete Monitors
+                </button>
+            </div>
+        </div>
+    </div>
+
+    {# Filters Panel #}
+    <div class="card filters-panel">
+        <div class="section-header">
+            <h2>Filters</h2>
+            <div class="section-actions">
+                <button type="button" class="btn btn-ghost btn-sm" onclick="clearFilters()" title="Clear all filters">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    Clear Filters
+                </button>
+            </div>
+        </div>
+        <div id="filters" class="panel-content">
+            <div class="filter-cards">
+                <div class="filter-card">
+                    <div class="filter-card-icon">🔍</div>
+                    <div class="filter-card-content">
+                        <label for="filter-name">Monitor Name</label>
+                        <div class="filter-input-row">
+                            <input type="text" id="filter-name" class="form-input" placeholder="name1, name2, ..." title="Search multiple names separated by commas">
+                            <button type="button" class="negate-btn" id="negate-name" onclick="toggleNegate('name')" title="Exclude matches">
+                                <span class="negate-icon">≠</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="filter-card">
+                    <div class="filter-card-icon">🏷️</div>
+                    <div class="filter-card-content">
+                        <label for="filter-tags">Tags</label>
+                        <div class="filter-input-row">
+                            <select id="filter-tags" class="form-input">
+                                <option value="">All Tags</option>
+                            </select>
+                            <button type="button" class="negate-btn" id="negate-tags" onclick="toggleNegate('tags')" title="Exclude this tag">
+                                <span class="negate-icon">≠</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="filter-card">
+                    <div class="filter-card-icon">🔔</div>
+                    <div class="filter-card-content">
+                        <label for="filter-notification">Notification</label>
+                        <div class="filter-input-row">
+                            <select id="filter-notification" class="form-input">
+                                <option value="">All Notifications</option>
+                                <option value="_none">No Notifications</option>
+                            </select>
+                            <button type="button" class="negate-btn" id="negate-notification" onclick="toggleNegate('notification')" title="Exclude this notification">
+                                <span class="negate-icon">≠</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="filter-card">
+                    <div class="filter-card-icon">📂</div>
+                    <div class="filter-card-content">
+                        <label for="filter-group">Group</label>
+                        <div class="filter-input-row">
+                            <select id="filter-group" class="form-input">
+                                <option value="">All Groups</option>
+                            </select>
+                            <button type="button" class="negate-btn" id="negate-group" onclick="toggleNegate('group')" title="Exclude this group">
+                                <span class="negate-icon">≠</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="filter-card">
+                    <div class="filter-card-icon">📡</div>
+                    <div class="filter-card-content">
+                        <label for="filter-type">Monitor Type</label>
+                        <div class="filter-input-row">
+                            <select id="filter-type" class="form-input">
+                                <option value="">All Types</option>
+                                <option value="group">Groups Only</option>
+                                <option value="monitor">Monitors Only</option>
+                            </select>
+                            <button type="button" class="negate-btn" id="negate-type" onclick="toggleNegate('type')" title="Exclude this type">
+                                <span class="negate-icon">≠</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="filter-card">
+                    <div class="filter-card-icon">⚡</div>
+                    <div class="filter-card-content">
+                        <label for="filter-status">Status</label>
+                        <div class="filter-input-row">
+                            <select id="filter-status" class="form-input">
+                                <option value="">All Status</option>
+                                <option value="active">Active Only</option>
+                                <option value="paused">Paused Only</option>
+                            </select>
+                            <button type="button" class="negate-btn" id="negate-status" onclick="toggleNegate('status')" title="Exclude this status">
+                                <span class="negate-icon">≠</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="filter-actions">
+                <button type="button" class="btn btn-primary" onclick="applyFilters(true)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+                    Apply Filters
+                </button>
+            </div>
+        </div>
+    </div>
+
+    {# Monitor Selection #}
+    <div class="card monitors-panel">
+        <div class="section-header">
+            <h2>Monitors <span class="badge" id="monitor-count">0</span></h2>
+            <div class="section-actions">
+                <button type="button" class="btn btn-primary btn-sm" onclick="selectAll()">Select All</button>
+                <button type="button" class="btn btn-primary btn-sm" onclick="invertSelection()">Invert</button>
+                <button type="button" class="btn btn-ghost btn-sm" onclick="selectNone()" title="Clear selection">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    Clear
+                </button>
+                <span class="section-divider"></span>
+                <button type="button" class="btn btn-primary btn-sm" onclick="reloadData()" title="Reload monitors">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M23 4v6h-6M1 20v-6h6"/>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                    </svg>
+                    Reload
+                </button>
+            </div>
+        </div>
+        
+        <div class="monitors-toolbar">
+            <div class="selected-info">
+                <span id="selected-count">0</span> selected
+            </div>
+        </div>
+        
+        <div class="monitors-list" id="monitors-list">
+            <div class="loading">Loading monitors...</div>
+        </div>
+    </div>
+
+    {# Changes Panel #}
+    <div class="card changes-panel">
+        <div class="section-header">
+            <h2>Bulk Changes</h2>
+            <div class="section-actions">
+                <button type="button" class="btn btn-ghost btn-sm" onclick="clearBulkChanges()" title="Clear all changes">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    Clear Changes
+                </button>
+            </div>
+        </div>
+        <div id="changes" class="panel-content">
+            <div class="change-cards-grid">
+                {# Notifications Card #}
+                <div class="change-card" id="card-notifications" onclick="toggleChangeCard('notifications')">
+                    <input type="checkbox" id="change-notifications" class="change-card-checkbox">
+                    <div class="change-card-header">
+                        <span class="change-card-icon">🔔</span>
+                        <span class="change-card-title">Notifications</span>
+                        <span class="change-card-check">✓</span>
+                    </div>
+                    <div class="change-card-options" id="change-notifications-options">
+                        <div class="form-group">
+                            <label>Action</label>
+                            <select id="notif-action" class="form-input" onclick="event.stopPropagation()">
+                                <option value="add">Add</option>
+                                <option value="set">Replace All</option>
+                                <option value="remove">Remove</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="label-with-action">
+                                Select Notifications
+                                <button type="button" class="btn-icon" onclick="event.stopPropagation(); refreshNotifications()" title="Refresh">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
+                                </button>
+                            </label>
+                            <select id="notif-select" class="form-input" multiple onclick="event.stopPropagation()"></select>
+                            <small id="notif-status" class="form-hint"></small>
+                        </div>
+                    </div>
+                </div>
+
+                {# Heartbeat Interval Card #}
+                <div class="change-card" id="card-interval" onclick="toggleChangeCard('interval')">
+                    <input type="checkbox" id="change-interval" class="change-card-checkbox">
+                    <div class="change-card-header">
+                        <span class="change-card-icon">💓</span>
+                        <span class="change-card-title">Heartbeat Interval</span>
+                        <span class="change-card-check">✓</span>
+                    </div>
+                    <div class="change-card-options" id="change-interval-options">
+                        <div class="form-group">
+                            <label for="interval-value">Interval (seconds)</label>
+                            <input type="number" id="interval-value" class="form-input" min="20" value="60" onclick="event.stopPropagation()">
+                        </div>
+                    </div>
+                </div>
+
+                {# Retries Card #}
+                <div class="change-card" id="card-retries" onclick="toggleChangeCard('retries')">
+                    <input type="checkbox" id="change-retries" class="change-card-checkbox">
+                    <div class="change-card-header">
+                        <span class="change-card-icon">🔄</span>
+                        <span class="change-card-title">Retries</span>
+                        <span class="change-card-check">✓</span>
+                    </div>
+                    <div class="change-card-options" id="change-retries-options">
+                        <div class="form-group">
+                            <label for="retries-value">Max Retries</label>
+                            <input type="number" id="retries-value" class="form-input" min="0" value="0" onclick="event.stopPropagation()">
+                        </div>
+                    </div>
+                </div>
+
+                {# Retry Interval Card #}
+                <div class="change-card" id="card-retry-interval" onclick="toggleChangeCard('retry-interval')">
+                    <input type="checkbox" id="change-retry-interval" class="change-card-checkbox">
+                    <div class="change-card-header">
+                        <span class="change-card-icon">⏱️</span>
+                        <span class="change-card-title">Retry Interval</span>
+                        <span class="change-card-check">✓</span>
+                    </div>
+                    <div class="change-card-options" id="change-retry-interval-options">
+                        <div class="form-group">
+                            <label for="retry-interval-value">Retry Interval (seconds)</label>
+                            <input type="number" id="retry-interval-value" class="form-input" min="20" value="60" onclick="event.stopPropagation()">
+                        </div>
+                    </div>
+                </div>
+
+                {# Resend Interval Card #}
+                <div class="change-card" id="card-resend" onclick="toggleChangeCard('resend')">
+                    <input type="checkbox" id="change-resend" class="change-card-checkbox">
+                    <div class="change-card-header">
+                        <span class="change-card-icon">📤</span>
+                        <span class="change-card-title">Resend Interval</span>
+                        <span class="change-card-check">✓</span>
+                    </div>
+                    <div class="change-card-options" id="change-resend-options">
+                        <div class="form-group">
+                            <label for="resend-value">Resend if Down X times (0 = disable)</label>
+                            <input type="number" id="resend-value" class="form-input" min="0" value="0" onclick="event.stopPropagation()">
+                        </div>
+                    </div>
+                </div>
+
+                {# Upside Down Mode Card #}
+                <div class="change-card" id="card-upside-down" onclick="toggleChangeCard('upside-down')">
+                    <input type="checkbox" id="change-upside-down" class="change-card-checkbox">
+                    <div class="change-card-header">
+                        <span class="change-card-icon">🔃</span>
+                        <span class="change-card-title">Upside Down Mode</span>
+                        <span class="change-card-check">✓</span>
+                    </div>
+                    <div class="change-card-options" id="change-upside-down-options">
+                        <div class="form-group">
+                            <label class="checkbox-label" onclick="event.stopPropagation()">
+                                <input type="checkbox" id="upside-down-value">
+                                <span>Enable Upside Down Mode</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                {# Monitor Group Card #}
+                <div class="change-card" id="card-group" onclick="toggleChangeCard('group')">
+                    <input type="checkbox" id="change-group" class="change-card-checkbox">
+                    <div class="change-card-header">
+                        <span class="change-card-icon">📁</span>
+                        <span class="change-card-title">Monitor Group</span>
+                        <span class="change-card-check">✓</span>
+                    </div>
+                    <div class="change-card-options" id="change-group-options">
+                        <div class="form-group">
+                            <label>Action</label>
+                            <select id="group-action" class="form-input" onclick="event.stopPropagation()">
+                                <option value="set">Set Group</option>
+                                <option value="clear">Clear Group</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="group-select-wrapper">
+                            <label>Target Group</label>
+                            <select id="group-select" class="form-input" onclick="event.stopPropagation()"></select>
+                        </div>
+                    </div>
+                </div>
+
+                {# Tags Card #}
+                <div class="change-card" id="card-tags" onclick="toggleChangeCard('tags')">
+                    <input type="checkbox" id="change-tags" class="change-card-checkbox">
+                    <div class="change-card-header">
+                        <span class="change-card-icon">🏷️</span>
+                        <span class="change-card-title">Tags</span>
+                        <span class="change-card-check">✓</span>
+                    </div>
+                    <div class="change-card-options" id="change-tags-options">
+                        <div class="form-group">
+                            <label>Action</label>
+                            <select id="tags-action" class="form-input" onclick="event.stopPropagation()">
+                                <option value="add">Add</option>
+                                <option value="set">Replace All</option>
+                                <option value="remove">Remove</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Tags</label>
+                            <select id="tags-select" class="form-input" multiple onclick="event.stopPropagation()"></select>
+                        </div>
+                        <p class="warning-text" onclick="event.stopPropagation()">⚠️ Tag editing may vary by Kuma version</p>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    {# Action Buttons #}
+    <div class="action-bar">
+        <button type="button" class="btn btn-secondary btn-lg" onclick="previewChanges()">
+            Preview Changes
+        </button>
+        <button type="button" class="btn btn-primary btn-lg" onclick="applyChanges()" id="apply-btn" disabled>
+            Apply Changes
+        </button>
+    </div>
+
+    {# Preview Modal #}
+    <div id="preview-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Preview Changes</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="preview-content">
+                {# Populated via JS #}
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-danger" onclick="confirmApply()">Confirm & Apply</button>
+            </div>
+        </div>
+    </div>
+
+    {# Manage Tags Modal #}
+    <div id="manage-tags-modal" class="modal hidden">
+        <div class="modal-content modal-lg">
+            <div class="modal-header">
+                <h2>🏷️ Manage Tags</h2>
+                <button class="modal-close" onclick="closeManageTagsModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="manage-section">
+                    <h3>Create New Tag</h3>
+                    <div class="create-form">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label for="new-tag-name">Tag Name</label>
+                                <input type="text" id="new-tag-name" class="form-input" placeholder="Enter tag name...">
+                            </div>
+                            <div class="form-group">
+                                <label for="new-tag-color">Color</label>
+                                <input type="color" id="new-tag-color" class="form-input form-color" value="#4B5563">
+                            </div>
+                            <button type="button" class="btn btn-primary" onclick="createTag()">Create Tag</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="manage-section">
+                    <h3>Existing Tags</h3>
+                    <div class="manage-list" id="tags-list">
+                        {# Populated via JS #}
+                        <div class="loading-state"><span class="loading-spinner"></span> Loading tags...</div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeManageTagsModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    {# Manage Groups Modal #}
+    <div id="manage-groups-modal" class="modal hidden">
+        <div class="modal-content modal-lg">
+            <div class="modal-header">
+                <h2>📁 Manage Groups</h2>
+                <button class="modal-close" onclick="closeManageGroupsModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="manage-section">
+                    <h3>Create New Group</h3>
+                    <div class="create-form">
+                        <div class="form-row">
+                            <div class="form-group flex-grow">
+                                <label for="new-group-name">Group Name</label>
+                                <input type="text" id="new-group-name" class="form-input" placeholder="Enter group name...">
+                            </div>
+                            <button type="button" class="btn btn-primary" onclick="createGroup()">Create Group</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="manage-section">
+                    <h3>Existing Groups</h3>
+                    <div class="manage-list" id="groups-list">
+                        {# Populated via JS #}
+                        <div class="loading-state"><span class="loading-spinner"></span> Loading groups...</div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeManageGroupsModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    {# Delete Monitors Modal #}
+    <div id="delete-monitors-modal" class="modal hidden">
+        <div class="modal-content modal-lg">
+            <div class="modal-header modal-header-danger">
+                <h2>🗑️ Delete Monitors</h2>
+                <button class="modal-close" onclick="closeDeleteMonitorsModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="delete-warning-box">
+                    <p class="danger-text">⚠️ <strong>DANGER:</strong> This will permanently delete the selected monitors!</p>
+                    <p class="danger-subtext">This action cannot be undone. All monitor history will be lost.</p>
+                </div>
+                
+                <div class="manage-section">
+                    <h3>Selected Monitors (<span id="delete-count">0</span>)</h3>
+                    <div class="manage-list" id="delete-monitors-list">
+                        <div class="empty-state">No monitors selected. Select monitors from the list first.</div>
+                    </div>
+                </div>
+                
+                <div class="delete-confirm-section">
+                    <label class="checkbox-label danger-confirm">
+                        <input type="checkbox" id="delete-monitors-confirm">
+                        <span>I understand this action is irreversible</span>
+                    </label>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeDeleteMonitorsModal()">Cancel</button>
+                <button class="btn btn-danger" onclick="confirmDeleteMonitors()" id="confirm-delete-btn" disabled>
+                    🗑️ Delete Selected Monitors
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// CSRF token for API calls
+const csrfToken = '{{ csrf_token() }}';
+</script>
+{% endblock %}

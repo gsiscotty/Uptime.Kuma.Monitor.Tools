@@ -1,0 +1,1429 @@
+{% extends "base.html" %}
+{% block title %}Connect to Kuma - Kuma Management Console{% endblock %}
+
+{% block content %}
+<div class="connect-page">
+    <!-- Saved Servers Section -->
+    <div class="saved-servers-section">
+        <div class="section-header">
+            <h2>Your Servers</h2>
+            <div class="section-header-actions">
+                <button class="btn btn-ghost btn-sm" onclick="showImportModal()" id="import-btn" title="Import servers from file">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="17 8 12 3 7 8"></polyline>
+                        <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                    Import
+                </button>
+                <button class="btn btn-ghost btn-sm" onclick="showExportModal()" id="export-btn" style="display: none;" title="Export servers to file">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="7 10 12 15 17 10"></polyline>
+                        <line x1="12" y1="15" x2="12" y2="3"></line>
+                    </svg>
+                    Export
+                </button>
+                <button class="btn btn-primary btn-sm" onclick="showAddServerModal()" id="add-server-btn" style="display: none;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                    Add Server
+                </button>
+            </div>
+        </div>
+        
+        <div id="servers-container" class="servers-grid">
+            <div class="loading-state">
+                <div class="loading-spinner"></div>
+                <p>Loading saved servers...</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Add/Edit Server Modal -->
+<div id="server-modal" class="modal hidden">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2 id="server-modal-title">Add Server</h2>
+            <button class="modal-close" onclick="closeServerModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form id="server-form" onsubmit="saveServer(event)">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" id="server-id" value="">
+                
+                <div class="form-group">
+                    <label for="server-name">Server Name *</label>
+                    <input type="text" id="server-name" class="form-input" 
+                           placeholder="My Kuma Server" required minlength="2">
+                    <small class="form-help">A friendly name to identify this server</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="server-url">Kuma URL *</label>
+                    <input type="text" id="server-url" class="form-input" 
+                           placeholder="https://kuma.example.com" required>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="server-username">Username *</label>
+                        <input type="text" id="server-username" class="form-input" 
+                               placeholder="admin" required autocomplete="username">
+                    </div>
+                    <div class="form-group">
+                        <label for="server-password">Password <span id="password-required">*</span></label>
+                        <input type="password" id="server-password" class="form-input" 
+                               placeholder="••••••••" autocomplete="current-password">
+                        <small class="form-help hidden" id="password-help">Leave blank to keep existing password</small>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="server-use-2fa" onchange="toggleServer2FA()">
+                        <span>Enable 2FA / TOTP</span>
+                    </label>
+                </div>
+                
+                <div id="server-2fa-options" class="hidden">
+                    <div class="form-group">
+                        <label>2FA Mode</label>
+                        <div class="radio-group">
+                            <label class="radio-label">
+                                <input type="radio" name="server-totp-mode" value="token" checked onchange="updateServerTotpWarning()">
+                                <span>Enter token each time</span>
+                            </label>
+                            <label class="radio-label">
+                                <input type="radio" name="server-totp-mode" value="secret" onchange="updateServerTotpWarning()">
+                                <span>Store TOTP secret</span>
+                            </label>
+                        </div>
+                        
+                        <div id="server-totp-warning-token" class="alert alert-info alert-sm">
+                            <strong>More Secure:</strong> You'll be prompted for a 2FA token each time you connect. 
+                            This is recommended if you're concerned about storing secrets.
+                        </div>
+                        
+                        <div id="server-totp-warning-secret" class="alert alert-warning alert-sm hidden">
+                            <strong>More Convenient:</strong> The TOTP secret will be stored encrypted. 
+                            Tokens will be generated automatically when connecting.
+                        </div>
+                    </div>
+                    
+                    <div id="server-totp-secret-group" class="form-group hidden">
+                        <label for="server-totp-secret">TOTP Secret</label>
+                        <input type="text" id="server-totp-secret" class="form-input" 
+                               placeholder="BASE32 secret from authenticator setup">
+                        <small class="form-help">The secret key (not the 6-digit code)</small>
+                    </div>
+                </div>
+                
+                <div id="server-form-error" class="alert alert-error hidden"></div>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeServerModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="saveServer(event)" id="server-save-btn">Save Server</button>
+        </div>
+    </div>
+</div>
+
+<!-- Token Prompt Modal (for connecting to servers with token mode) -->
+<div id="token-modal" class="modal hidden">
+    <div class="modal-content modal-sm">
+        <div class="modal-header">
+            <h2>Enter 2FA Token</h2>
+            <button class="modal-close" onclick="closeTokenModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p id="token-modal-message">Enter the current 2FA token to connect.</p>
+            <div class="form-group">
+                <label for="connect-token">TOTP Token</label>
+                <input type="text" id="connect-token" class="form-input token-input" 
+                       placeholder="000000" maxlength="6" inputmode="numeric" pattern="[0-9]{6}"
+                       autocomplete="one-time-code">
+            </div>
+            <div id="token-modal-error" class="alert alert-error hidden"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeTokenModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="submitToken()" id="token-submit-btn">Connect</button>
+        </div>
+    </div>
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div id="delete-modal" class="modal hidden">
+    <div class="modal-content modal-sm">
+        <div class="modal-header">
+            <h2>Delete Server</h2>
+            <button class="modal-close" onclick="closeDeleteModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p>Are you sure you want to delete <strong id="delete-server-name"></strong>?</p>
+            <p class="text-muted">This action cannot be undone.</p>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeDeleteModal()">Cancel</button>
+            <button class="btn btn-danger" onclick="confirmDelete()" id="delete-confirm-btn">Delete</button>
+        </div>
+    </div>
+</div>
+
+<!-- Export Modal -->
+<div id="export-modal" class="modal hidden">
+    <div class="modal-content modal-sm">
+        <div class="modal-header">
+            <h2>Export Servers</h2>
+            <button class="modal-close" onclick="closeExportModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p>Export your saved servers to a JSON file for backup or transfer.</p>
+            
+            <div class="export-info-box">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="12" y1="16" x2="12" y2="12"></line>
+                    <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                </svg>
+                <p>By default, passwords and TOTP secrets are <strong>not included</strong> for security.</p>
+            </div>
+            
+            <div class="form-group" style="margin-top: 1rem;">
+                <label class="checkbox-label export-credentials-label">
+                    <input type="checkbox" id="export-include-credentials" onchange="updateExportWarning()">
+                    <span>Include encrypted credentials</span>
+                </label>
+            </div>
+            
+            <div id="export-credentials-warning" class="alert alert-warning alert-sm hidden">
+                <strong>Security Warning:</strong> Credentials will be included in encrypted form. 
+                They can only be decrypted by an instance using the same SECRET_KEY. 
+                Keep the export file secure!
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeExportModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="exportServers()" id="export-confirm-btn">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                Export
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Import Modal -->
+<div id="import-modal" class="modal hidden">
+    <div class="modal-content modal-sm">
+        <div class="modal-header">
+            <h2>Import Servers</h2>
+            <button class="modal-close" onclick="closeImportModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p>Import servers from a previously exported JSON file.</p>
+            
+            <div class="form-group">
+                <label for="import-file" class="file-upload-label">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="17 8 12 3 7 8"></polyline>
+                        <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                    <span id="import-file-name">Choose a file or drag & drop</span>
+                    <input type="file" id="import-file" accept=".json" onchange="handleImportFile(this)">
+                </label>
+            </div>
+            
+            <div id="import-preview" class="import-preview hidden">
+                <h4>Preview</h4>
+                <div id="import-preview-content"></div>
+            </div>
+            
+            <div id="import-error" class="alert alert-error hidden"></div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeImportModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="importServers()" id="import-confirm-btn" disabled>
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="17 8 12 3 7 8"></polyline>
+                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                Import
+            </button>
+        </div>
+    </div>
+</div>
+
+<style>
+.connect-page {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: var(--space-6);
+}
+
+.saved-servers-section {
+    margin-bottom: var(--space-8);
+}
+
+.section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--space-4);
+}
+
+.section-header h2 {
+    margin: 0;
+    font-size: 1.5rem;
+}
+
+.servers-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: var(--space-4);
+    align-items: stretch;
+}
+
+.server-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: var(--space-5);
+    transition: all var(--transition);
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 180px;
+}
+
+.server-card:hover {
+    border-color: var(--primary);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-2px);
+}
+
+.server-card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: var(--space-3);
+}
+
+.server-card-title {
+    font-size: 1.125rem;
+    font-weight: 600;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.server-card-title svg {
+    color: var(--primary);
+}
+
+.server-card-actions {
+    display: flex;
+    gap: var(--space-1);
+}
+
+.server-card-actions .btn-icon {
+    padding: var(--space-1);
+    opacity: 0.5;
+}
+
+.server-card:hover .server-card-actions .btn-icon {
+    opacity: 1;
+}
+
+.server-card-url {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    margin-bottom: var(--space-2);
+    word-break: break-all;
+}
+
+.server-card-meta {
+    display: flex;
+    gap: var(--space-3);
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-bottom: var(--space-4);
+    flex-grow: 1;
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+
+.server-card-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    background: var(--bg-hover);
+    border-radius: var(--radius-full);
+}
+
+.server-card-badge.badge-2fa {
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--success);
+}
+
+.server-card-connect {
+    width: 100%;
+    margin-top: auto;
+}
+
+/* Empty state - centered and prominent */
+.empty-servers {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: var(--space-12) var(--space-6);
+    background: var(--bg-card);
+    border: 2px dashed var(--border-color);
+    border-radius: var(--radius-lg);
+}
+
+.empty-servers-icon {
+    width: 80px;
+    height: 80px;
+    margin: 0 auto var(--space-4);
+    color: var(--text-muted);
+    opacity: 0.5;
+}
+
+.empty-servers h3 {
+    font-size: 1.25rem;
+    margin-bottom: var(--space-2);
+    color: var(--text-primary);
+}
+
+.empty-servers p {
+    color: var(--text-muted);
+    margin-bottom: var(--space-5);
+    max-width: 400px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.empty-servers .btn {
+    min-width: 200px;
+}
+
+.alert-sm {
+    padding: var(--space-2) var(--space-3);
+    font-size: 0.8125rem;
+    margin-top: var(--space-2);
+}
+
+.token-input {
+    text-align: center;
+    font-size: 1.5rem;
+    letter-spacing: 0.5rem;
+    padding: var(--space-3);
+}
+
+.modal-sm .modal-content {
+    max-width: 400px;
+}
+
+.section-header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+/* Export/Import Styles */
+.export-info-box {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    margin-top: var(--space-3);
+}
+
+.export-info-box svg {
+    color: var(--primary-light);
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+
+.export-info-box p {
+    margin: 0;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.export-credentials-label {
+    cursor: pointer;
+}
+
+.file-upload-label {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-6);
+    border: 2px dashed var(--border-color);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: all var(--transition);
+    text-align: center;
+}
+
+.file-upload-label:hover {
+    border-color: var(--primary);
+    background: rgba(139, 92, 246, 0.05);
+}
+
+.file-upload-label svg {
+    color: var(--text-muted);
+}
+
+.file-upload-label span {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+.file-upload-label input[type="file"] {
+    display: none;
+}
+
+.file-upload-label.has-file {
+    border-color: var(--success);
+    background: rgba(34, 197, 94, 0.05);
+}
+
+.file-upload-label.has-file svg {
+    color: var(--success);
+}
+
+.file-upload-label.dragover {
+    border-color: var(--primary);
+    background: rgba(139, 92, 246, 0.1);
+}
+
+.import-preview {
+    margin-top: var(--space-4);
+    padding: var(--space-3);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+}
+
+.import-preview h4 {
+    margin: 0 0 var(--space-2) 0;
+    font-size: 0.875rem;
+    color: var(--text-muted);
+}
+
+.import-preview-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    font-size: 0.875rem;
+}
+
+.import-preview-list li {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.import-preview-list li:last-child {
+    border-bottom: none;
+}
+
+.import-preview-list .server-name {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.import-preview-list .server-url {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin-left: auto;
+}
+
+.import-preview-warning {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+    padding: var(--space-2);
+    background: rgba(245, 158, 11, 0.1);
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    color: #f59e0b;
+}
+
+@media (max-width: 768px) {
+    .connect-page {
+        padding: var(--space-4);
+    }
+    
+    .servers-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .empty-servers {
+        padding: var(--space-8) var(--space-4);
+    }
+}
+</style>
+
+<script>
+const csrfToken = "{{ csrf_token() }}";
+let savedServers = [];
+let currentServerId = null;
+let pendingConnectServerId = null;
+
+// Initialize
+document.addEventListener('DOMContentLoaded', function() {
+    loadSavedServers();
+    
+    // Enter key on token input
+    document.getElementById('connect-token').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') submitToken();
+    });
+});
+
+// Load saved servers
+async function loadSavedServers() {
+    const container = document.getElementById('servers-container');
+    
+    try {
+        const response = await fetch('/kuma/api/servers');
+        const data = await response.json();
+        
+        savedServers = data.servers || [];
+        renderServers();
+    } catch (error) {
+        console.error('Failed to load servers:', error);
+        container.innerHTML = `
+            <div class="error-state" style="grid-column: 1 / -1; text-align: center; padding: 3rem;">
+                <p>Failed to load saved servers</p>
+                <button class="btn btn-secondary btn-sm" onclick="loadSavedServers()">Retry</button>
+            </div>
+        `;
+    }
+}
+
+function renderServers() {
+    const container = document.getElementById('servers-container');
+    const addBtn = document.getElementById('add-server-btn');
+    const exportBtn = document.getElementById('export-btn');
+    
+    if (savedServers.length === 0) {
+        // Hide the header add/export buttons, show empty state with add button
+        addBtn.style.display = 'none';
+        exportBtn.style.display = 'none';
+        container.innerHTML = `
+            <div class="empty-servers">
+                <svg class="empty-servers-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+                    <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+                    <line x1="6" y1="6" x2="6.01" y2="6"></line>
+                    <line x1="6" y1="18" x2="6.01" y2="18"></line>
+                </svg>
+                <h3>No servers configured</h3>
+                <p>Add your first Uptime Kuma server to get started with bulk editing monitors.</p>
+                <button class="btn btn-primary" onclick="showAddServerModal()">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 8px;">
+                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                    Add Your First Server
+                </button>
+            </div>
+        `;
+        return;
+    }
+    
+    // Show the header add/export buttons when servers exist
+    addBtn.style.display = 'inline-flex';
+    exportBtn.style.display = 'inline-flex';
+    
+    container.innerHTML = savedServers.map(server => `
+        <div class="server-card" data-id="${server.id}">
+            <div class="server-card-header">
+                <h3 class="server-card-title">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+                        <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+                        <line x1="6" y1="6" x2="6.01" y2="6"></line>
+                        <line x1="6" y1="18" x2="6.01" y2="18"></line>
+                    </svg>
+                    ${escapeHtml(server.name)}
+                </h3>
+                <div class="server-card-actions">
+                    <button class="btn-icon" onclick="editServer(${server.id})" title="Edit">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                        </svg>
+                    </button>
+                    <button class="btn-icon" onclick="showDeleteModal(${server.id})" title="Delete">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="server-card-url">${escapeHtml(server.url)}</div>
+            <div class="server-card-meta">
+                <span>@${escapeHtml(server.username)}</span>
+                ${server.use_2fa ? `<span class="server-card-badge badge-2fa">2FA ${server.totp_mode === 'secret' ? '(auto)' : '(manual)'}</span>` : ''}
+            </div>
+            <button class="btn btn-primary server-card-connect" onclick="connectToServer(${server.id})">
+                Connect
+            </button>
+        </div>
+    `).join('');
+}
+
+// Add Server Modal
+function showAddServerModal() {
+    currentServerId = null;
+    
+    const title = document.getElementById('server-modal-title');
+    const saveBtn = document.getElementById('server-save-btn');
+    const form = document.getElementById('server-form');
+    const serverId = document.getElementById('server-id');
+    const twoFaOptions = document.getElementById('server-2fa-options');
+    const totpSecretGroup = document.getElementById('server-totp-secret-group');
+    const pwdRequired = document.getElementById('password-required');
+    const pwdHelp = document.getElementById('password-help');
+    const formError = document.getElementById('server-form-error');
+    const modal = document.getElementById('server-modal');
+    const serverName = document.getElementById('server-name');
+    const use2fa = document.getElementById('server-use-2fa');
+    const totpRadio = document.querySelector('input[name="server-totp-mode"][value="token"]');
+    
+    if (title) title.textContent = 'Add Server';
+    if (saveBtn) saveBtn.textContent = 'Save Server';
+    if (form) form.reset();
+    if (serverId) serverId.value = '';
+    if (twoFaOptions) twoFaOptions.classList.add('hidden');
+    if (totpSecretGroup) totpSecretGroup.classList.add('hidden');
+    if (pwdRequired) pwdRequired.textContent = '*';
+    if (pwdHelp) pwdHelp.classList.add('hidden');
+    if (formError) formError.classList.add('hidden');
+    if (use2fa) use2fa.checked = false;
+    if (totpRadio) totpRadio.checked = true;
+    
+    updateServerTotpWarning();
+    
+    if (modal) modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    
+    setTimeout(() => { if (serverName) serverName.focus(); }, 100);
+}
+
+function editServer(id) {
+    const server = savedServers.find(s => s.id === id);
+    if (!server) return;
+    
+    currentServerId = id;
+    document.getElementById('server-modal-title').textContent = 'Edit Server';
+    document.getElementById('server-save-btn').textContent = 'Update Server';
+    document.getElementById('server-id').value = id;
+    document.getElementById('server-name').value = server.name;
+    document.getElementById('server-url').value = server.url;
+    document.getElementById('server-username').value = server.username;
+    document.getElementById('server-password').value = '';
+    document.getElementById('server-use-2fa').checked = server.use_2fa;
+    document.getElementById('password-required').textContent = '';
+    document.getElementById('password-help')?.classList.remove('hidden');
+    document.getElementById('server-form-error')?.classList.add('hidden');
+    
+    // Set 2FA options
+    if (server.use_2fa) {
+        document.getElementById('server-2fa-options').classList.remove('hidden');
+        document.querySelector(`input[name="server-totp-mode"][value="${server.totp_mode}"]`).checked = true;
+        updateServerTotpWarning();
+    } else {
+        document.getElementById('server-2fa-options').classList.add('hidden');
+    }
+    
+    document.getElementById('server-modal').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeServerModal() {
+    const modal = document.getElementById('server-modal');
+    if (modal) modal.classList.add('hidden');
+    document.body.style.overflow = '';
+    currentServerId = null;
+}
+
+function toggleServer2FA() {
+    const checkbox = document.getElementById('server-use-2fa');
+    const options = document.getElementById('server-2fa-options');
+    options.classList.toggle('hidden', !checkbox.checked);
+    if (checkbox.checked) {
+        updateServerTotpWarning();
+    }
+}
+
+function updateServerTotpWarning() {
+    const mode = document.querySelector('input[name="server-totp-mode"]:checked')?.value || 'token';
+    const warningToken = document.getElementById('server-totp-warning-token');
+    const warningSecret = document.getElementById('server-totp-warning-secret');
+    const secretGroup = document.getElementById('server-totp-secret-group');
+    
+    if (mode === 'token') {
+        if (warningToken) warningToken.classList.remove('hidden');
+        if (warningSecret) warningSecret.classList.add('hidden');
+        if (secretGroup) secretGroup.classList.add('hidden');
+    } else {
+        if (warningToken) warningToken.classList.add('hidden');
+        if (warningSecret) warningSecret.classList.remove('hidden');
+        if (secretGroup) secretGroup.classList.remove('hidden');
+    }
+}
+
+async function saveServer(event) {
+    if (event) event.preventDefault();
+    
+    const saveBtn = document.getElementById('server-save-btn');
+    let errorEl = document.getElementById('server-form-error');
+    
+    // Create error element if it doesn't exist
+    if (!errorEl) {
+        errorEl = document.createElement('div');
+        errorEl.id = 'server-form-error';
+        errorEl.className = 'alert alert-error hidden';
+        const form = document.getElementById('server-form');
+        if (form) {
+            form.appendChild(errorEl);
+        }
+    }
+    
+    // Helper function to show errors
+    function showError(message) {
+        if (errorEl) {
+            errorEl.textContent = message;
+            errorEl.classList.remove('hidden');
+        } else {
+            alert('Error: ' + message);
+        }
+    }
+    
+    if (!saveBtn) {
+        showError('Save button not found. Please refresh the page.');
+        return;
+    }
+    
+    const data = {
+        name: document.getElementById('server-name')?.value?.trim() || '',
+        url: document.getElementById('server-url')?.value?.trim() || '',
+        username: document.getElementById('server-username')?.value?.trim() || '',
+        password: document.getElementById('server-password')?.value || '',
+        use_2fa: document.getElementById('server-use-2fa')?.checked || false,
+        totp_mode: document.querySelector('input[name="server-totp-mode"]:checked')?.value || 'token',
+        totp_secret: document.getElementById('server-totp-secret')?.value?.trim() || ''
+    };
+    
+    // Validate
+    if (!data.name || data.name.length < 2) {
+        showError('Server name must be at least 2 characters');
+        return;
+    }
+    
+    if (!data.url) {
+        showError('URL is required');
+        return;
+    }
+    
+    if (!data.username) {
+        showError('Username is required');
+        return;
+    }
+    
+    // Password required for new servers
+    if (!currentServerId && !data.password) {
+        showError('Password is required');
+        return;
+    }
+    
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<span class="loading-spinner-sm"></span> Saving...';
+    if (errorEl) errorEl.classList.add('hidden');
+    
+    try {
+        const apiUrl = currentServerId 
+            ? `/kuma/api/servers/${currentServerId}` 
+            : '/kuma/api/servers';
+        const method = currentServerId ? 'PUT' : 'POST';
+        
+        // Add timeout using AbortController
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+        
+        const response = await fetch(apiUrl, {
+            method: method,
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken
+            },
+            body: JSON.stringify(data),
+            signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        
+        const result = await response.json();
+        
+        if (response.ok && result.success) {
+            closeServerModal();
+            await loadSavedServers();
+            showToast(result.message || 'Server saved successfully', 'success');
+        } else {
+            showError(result.error || 'Failed to save server');
+        }
+    } catch (error) {
+        console.error('Save server failed:', error);
+        if (error.name === 'AbortError') {
+            showError('Request timed out. Please try again.');
+        } else {
+            showError('Network error. Please try again.');
+        }
+    } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = currentServerId ? 'Update Server' : 'Save Server';
+    }
+}
+
+// Connect to server
+async function connectToServer(id) {
+    const server = savedServers.find(s => s.id === id);
+    if (!server) return;
+    
+    // If 2FA with token mode, show token modal
+    if (server.use_2fa && server.totp_mode === 'token') {
+        pendingConnectServerId = id;
+        const messageEl = document.getElementById('token-modal-message');
+        const tokenInput = document.getElementById('connect-token');
+        const errorEl = document.getElementById('token-modal-error');
+        const modal = document.getElementById('token-modal');
+        
+        if (messageEl) messageEl.textContent = `Enter the current 2FA token to connect to ${server.name}.`;
+        if (tokenInput) tokenInput.value = '';
+        if (errorEl) errorEl.classList.add('hidden');
+        if (modal) modal.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
+        setTimeout(() => { if (tokenInput) tokenInput.focus(); }, 100);
+        return;
+    }
+    
+    // Otherwise, connect directly
+    await doConnect(id, '');
+}
+
+async function submitToken() {
+    const token = document.getElementById('connect-token')?.value?.trim() || '';
+    const errorEl = document.getElementById('token-modal-error');
+    
+    if (!token || !/^\d{6}$/.test(token)) {
+        if (errorEl) {
+            errorEl.textContent = 'Please enter a valid 6-digit code';
+            errorEl.classList.remove('hidden');
+        }
+        return;
+    }
+    
+    await doConnect(pendingConnectServerId, token);
+}
+
+async function doConnect(serverId, token) {
+    const submitBtn = document.getElementById('token-submit-btn');
+    const errorEl = document.getElementById('token-modal-error');
+    
+    // Find the connect button on the card
+    const card = document.querySelector(`.server-card[data-id="${serverId}"]`);
+    const cardBtn = card?.querySelector('.server-card-connect');
+    
+    if (cardBtn) {
+        cardBtn.disabled = true;
+        cardBtn.innerHTML = '<span class="loading-spinner-sm"></span> Connecting...';
+    }
+    
+    if (submitBtn && pendingConnectServerId) {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<span class="loading-spinner-sm"></span> Connecting...';
+    }
+    
+    try {
+        const response = await fetch(`/kuma/api/servers/${serverId}/connect`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken
+            },
+            body: JSON.stringify({ totp_token: token })
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok && result.success) {
+            closeTokenModal();
+            showToast(result.message || 'Connected successfully!', 'success');
+            
+            // Redirect to editor
+            if (result.redirect) {
+                window.location.href = result.redirect;
+            }
+        } else {
+            if (errorEl && pendingConnectServerId) {
+                errorEl.textContent = result.error || 'Connection failed';
+                errorEl.classList.remove('hidden');
+            } else {
+                showToast(result.error || 'Connection failed', 'error');
+            }
+        }
+    } catch (error) {
+        console.error('Connect error:', error);
+        if (errorEl && pendingConnectServerId) {
+            errorEl.textContent = 'Network error. Please try again.';
+            errorEl.classList.remove('hidden');
+        } else {
+            showToast('Network error', 'error');
+        }
+    } finally {
+        if (cardBtn) {
+            cardBtn.disabled = false;
+            cardBtn.textContent = 'Connect';
+        }
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Connect';
+        }
+    }
+}
+
+function closeTokenModal() {
+    const modal = document.getElementById('token-modal');
+    if (modal) modal.classList.add('hidden');
+    document.body.style.overflow = '';
+    pendingConnectServerId = null;
+}
+
+// Delete server
+let deleteServerId = null;
+
+function showDeleteModal(id) {
+    const server = savedServers.find(s => s.id === id);
+    if (!server) return;
+    
+    deleteServerId = id;
+    const nameEl = document.getElementById('delete-server-name');
+    const modal = document.getElementById('delete-modal');
+    if (nameEl) nameEl.textContent = server.name;
+    if (modal) modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeDeleteModal() {
+    const modal = document.getElementById('delete-modal');
+    if (modal) modal.classList.add('hidden');
+    document.body.style.overflow = '';
+    deleteServerId = null;
+}
+
+async function confirmDelete() {
+    if (!deleteServerId) return;
+    
+    const btn = document.getElementById('delete-confirm-btn');
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="loading-spinner-sm"></span> Deleting...';
+    }
+    
+    try {
+        const response = await fetch(`/kuma/api/servers/${deleteServerId}`, {
+            method: 'DELETE',
+            headers: {
+                'X-CSRFToken': csrfToken
+            }
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok && result.success) {
+            closeDeleteModal();
+            loadSavedServers();
+            showToast('Server deleted', 'success');
+        } else {
+            showToast(result.error || 'Failed to delete', 'error');
+        }
+    } catch (error) {
+        console.error('Delete error:', error);
+        showToast('Network error', 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Delete';
+        }
+    }
+}
+
+// Toast notification
+function showToast(message, type = 'info') {
+    const existing = document.querySelector('.toast');
+    if (existing) existing.remove();
+    
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    requestAnimationFrame(() => toast.classList.add('show'));
+    
+    setTimeout(() => {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+    }, 2500);
+}
+
+// Utility
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Close modals on escape
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        closeServerModal();
+        closeTokenModal();
+        closeDeleteModal();
+    }
+});
+
+// Close modals on backdrop click
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('modal')) {
+        closeServerModal();
+        closeTokenModal();
+        closeDeleteModal();
+        closeExportModal();
+        closeImportModal();
+    }
+});
+
+// ============================================================================
+// Export/Import Functions
+// ============================================================================
+
+function showExportModal() {
+    const modal = document.getElementById('export-modal');
+    const checkbox = document.getElementById('export-include-credentials');
+    const warning = document.getElementById('export-credentials-warning');
+    
+    if (checkbox) checkbox.checked = false;
+    if (warning) warning.classList.add('hidden');
+    if (modal) modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeExportModal() {
+    const modal = document.getElementById('export-modal');
+    if (modal) modal.classList.add('hidden');
+    document.body.style.overflow = '';
+}
+
+function updateExportWarning() {
+    const checkbox = document.getElementById('export-include-credentials');
+    const warning = document.getElementById('export-credentials-warning');
+    
+    if (checkbox && warning) {
+        warning.classList.toggle('hidden', !checkbox.checked);
+    }
+}
+
+async function exportServers() {
+    const includeCredentials = document.getElementById('export-include-credentials')?.checked || false;
+    const btn = document.getElementById('export-confirm-btn');
+    
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="loading-spinner-sm"></span> Exporting...';
+    }
+    
+    try {
+        const url = `/kuma/api/servers/export${includeCredentials ? '?include_credentials=true' : ''}`;
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            throw new Error('Export failed');
+        }
+        
+        // Get the blob and trigger download
+        const blob = await response.blob();
+        const filename = response.headers.get('Content-Disposition')?.match(/filename=(.+)/)?.[1] 
+            || `kuma-servers-export-${new Date().toISOString().slice(0,10)}.json`;
+        
+        const downloadUrl = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(downloadUrl);
+        a.remove();
+        
+        closeExportModal();
+        showToast(`Exported ${savedServers.length} server(s)`, 'success');
+        
+    } catch (error) {
+        console.error('Export error:', error);
+        showToast('Export failed', 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                Export
+            `;
+        }
+    }
+}
+
+let importData = null;
+
+function showImportModal() {
+    const modal = document.getElementById('import-modal');
+    const fileInput = document.getElementById('import-file');
+    const fileName = document.getElementById('import-file-name');
+    const preview = document.getElementById('import-preview');
+    const errorEl = document.getElementById('import-error');
+    const confirmBtn = document.getElementById('import-confirm-btn');
+    const label = document.querySelector('.file-upload-label');
+    
+    importData = null;
+    if (fileInput) fileInput.value = '';
+    if (fileName) fileName.textContent = 'Choose a file or drag & drop';
+    if (preview) preview.classList.add('hidden');
+    if (errorEl) errorEl.classList.add('hidden');
+    if (confirmBtn) confirmBtn.disabled = true;
+    if (label) label.classList.remove('has-file');
+    
+    if (modal) modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeImportModal() {
+    const modal = document.getElementById('import-modal');
+    if (modal) modal.classList.add('hidden');
+    document.body.style.overflow = '';
+    importData = null;
+}
+
+function handleImportFile(input) {
+    const file = input.files[0];
+    const fileName = document.getElementById('import-file-name');
+    const preview = document.getElementById('import-preview');
+    const previewContent = document.getElementById('import-preview-content');
+    const errorEl = document.getElementById('import-error');
+    const confirmBtn = document.getElementById('import-confirm-btn');
+    const label = document.querySelector('.file-upload-label');
+    
+    if (!file) return;
+    
+    // Update label
+    if (fileName) fileName.textContent = file.name;
+    if (label) label.classList.add('has-file');
+    if (errorEl) errorEl.classList.add('hidden');
+    
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            const data = JSON.parse(e.target.result);
+            
+            // Validate format
+            if (!data.servers || !Array.isArray(data.servers)) {
+                throw new Error('Invalid file format: missing servers array');
+            }
+            
+            importData = data;
+            
+            // Show preview
+            const hasCredentials = data.include_credentials || false;
+            let previewHtml = '<ul class="import-preview-list">';
+            
+            const maxPreview = 5;
+            data.servers.slice(0, maxPreview).forEach(server => {
+                previewHtml += `
+                    <li>
+                        <span class="server-name">${escapeHtml(server.name)}</span>
+                        <span class="server-url">${escapeHtml(server.url)}</span>
+                    </li>
+                `;
+            });
+            
+            if (data.servers.length > maxPreview) {
+                previewHtml += `<li><span class="text-muted">...and ${data.servers.length - maxPreview} more</span></li>`;
+            }
+            
+            previewHtml += '</ul>';
+            
+            if (!hasCredentials) {
+                previewHtml += `
+                    <div class="import-preview-warning">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="12" y1="8" x2="12" y2="12"></line>
+                            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                        </svg>
+                        Passwords not included. You'll need to set them manually after import.
+                    </div>
+                `;
+            }
+            
+            if (previewContent) previewContent.innerHTML = previewHtml;
+            if (preview) preview.classList.remove('hidden');
+            if (confirmBtn) confirmBtn.disabled = false;
+            
+        } catch (error) {
+            console.error('Parse error:', error);
+            importData = null;
+            if (errorEl) {
+                errorEl.textContent = error.message || 'Failed to parse file';
+                errorEl.classList.remove('hidden');
+            }
+            if (preview) preview.classList.add('hidden');
+            if (confirmBtn) confirmBtn.disabled = true;
+            if (label) label.classList.remove('has-file');
+        }
+    };
+    
+    reader.onerror = function() {
+        if (errorEl) {
+            errorEl.textContent = 'Failed to read file';
+            errorEl.classList.remove('hidden');
+        }
+        if (label) label.classList.remove('has-file');
+    };
+    
+    reader.readAsText(file);
+}
+
+async function importServers() {
+    if (!importData) return;
+    
+    const btn = document.getElementById('import-confirm-btn');
+    const errorEl = document.getElementById('import-error');
+    
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="loading-spinner-sm"></span> Importing...';
+    }
+    
+    try {
+        const response = await fetch('/kuma/api/servers/import', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken
+            },
+            body: JSON.stringify(importData)
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok && result.success) {
+            closeImportModal();
+            await loadSavedServers();
+            
+            let message = result.message;
+            if (result.needs_passwords) {
+                showToast(message, 'warning');
+            } else {
+                showToast(message, 'success');
+            }
+            
+            // Show errors if any
+            if (result.errors && result.errors.length > 0) {
+                console.warn('Import warnings:', result.errors);
+            }
+        } else {
+            if (errorEl) {
+                errorEl.textContent = result.error || 'Import failed';
+                errorEl.classList.remove('hidden');
+            }
+        }
+        
+    } catch (error) {
+        console.error('Import error:', error);
+        if (errorEl) {
+            errorEl.textContent = 'Network error. Please try again.';
+            errorEl.classList.remove('hidden');
+        }
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="17 8 12 3 7 8"></polyline>
+                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                Import
+            `;
+        }
+    }
+}
+
+// Drag and drop support for import
+document.addEventListener('DOMContentLoaded', function() {
+    const label = document.querySelector('.file-upload-label');
+    if (!label) return;
+    
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        label.addEventListener(eventName, preventDefaults, false);
+    });
+    
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+    
+    ['dragenter', 'dragover'].forEach(eventName => {
+        label.addEventListener(eventName, () => label.classList.add('dragover'), false);
+    });
+    
+    ['dragleave', 'drop'].forEach(eventName => {
+        label.addEventListener(eventName, () => label.classList.remove('dragover'), false);
+    });
+    
+    label.addEventListener('drop', function(e) {
+        const file = e.dataTransfer.files[0];
+        if (file && file.name.endsWith('.json')) {
+            const fileInput = document.getElementById('import-file');
+            const dataTransfer = new DataTransfer();
+            dataTransfer.items.add(file);
+            fileInput.files = dataTransfer.files;
+            handleImportFile(fileInput);
+        }
+    }, false);
+});
+</script>
+{% endblock %}

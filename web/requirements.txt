@@ -1,0 +1,24 @@
+# Kuma Management Console Web Application - Requirements
+# Flask and extensions
+Flask>=3.1.1
+Flask-SQLAlchemy>=3.1.0
+Flask-WTF>=1.2.0
+Flask-Limiter>=3.5.0
+
+# Authentication
+pyotp>=2.9.0
+qrcode>=7.4.0
+Pillow>=11.3.0
+
+# Security
+Werkzeug>=3.0.0
+cryptography>=42.0.4
+
+# Database
+SQLAlchemy>=2.0.0
+
+# Uptime Kuma API
+uptime-kuma-api>=1.2.0
+
+# Production WSGI server
+gunicorn>=22.0.0

@@ -1,0 +1,73 @@
+# =============================================================================
+# Kuma Management Console - Docker Compose
+# For local development and Komodo deployment
+# =============================================================================
+
+services:
+  kuma-console:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kuma-management-console
+    restart: unless-stopped
+    
+    # Port mapping (use reverse proxy in production)
+    # Format: "HOST_PORT:CONTAINER_PORT"
+    ports:
+      - "5080:5000"
+    
+    # Environment variables
+    environment:
+      # REQUIRED: Set a secure secret key (generate with: python -c "import secrets; print(secrets.token_hex(32))")
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      
+      # Database location (SQLite file inside container)
+      - DATABASE_URL=sqlite:////app/data/users.db
+      
+      # Session settings
+      - SESSION_LIFETIME=${SESSION_LIFETIME:-1800}
+      # Set to 'false' for local development without HTTPS
+      - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-false}
+      
+      # Security settings
+      - MAX_LOGIN_ATTEMPTS=${MAX_LOGIN_ATTEMPTS:-5}
+      - LOCKOUT_DURATION=${LOCKOUT_DURATION:-15}
+      - REQUIRE_2FA=${REQUIRE_2FA:-false}
+      - ALLOWED_IPS=${ALLOWED_IPS:-}
+      
+      # Development: Allow localhost connections to Kuma
+      - ALLOW_LOCALHOST=${ALLOW_LOCALHOST:-true}
+      
+      # Timezone
+      - TZ=${TZ:-UTC}
+    
+    # Persistent storage for user database
+    volumes:
+      - kuma_console_data:/app/data
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/auth/login')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+
+# Named volume for persistent data
+volumes:
+  kuma_console_data:
+    driver: local

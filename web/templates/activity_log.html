@@ -1,0 +1,696 @@
+{% extends "base.html" %}
+{% block title %}Activity Log - Kuma Management Console{% endblock %}
+
+{% block content %}
+<div class="activity-container">
+    <div class="activity-header">
+        <div class="activity-title">
+            <h1>Activity Log</h1>
+            <p class="text-muted">
+                View all actions and events in the console
+                <span class="log-stats">
+                    ({{ total_logs }} total entries{% if retention_days > 0 %}, {{ retention_days }}-day retention{% endif %})
+                </span>
+            </p>
+        </div>
+        <div class="activity-actions">
+            {% if is_admin %}
+            <button type="button" class="btn btn-ghost btn-sm" onclick="showSettingsModal()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                </svg>
+                Settings
+            </button>
+            <form method="POST" action="{{ url_for('auth.cleanup_activity_log') }}" style="display: inline;" onsubmit="return confirmCleanup();">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-ghost btn-sm">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="3 6 5 6 21 6"></polyline>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                    </svg>
+                    Cleanup
+                </button>
+            </form>
+            {% endif %}
+            <button type="button" class="btn btn-ghost btn-sm" onclick="exportLogs();">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                Export
+            </button>
+        </div>
+    </div>
+    
+    <!-- Filters -->
+    <div class="activity-filters card">
+        <form method="GET" class="filter-form">
+            <div class="filter-row">
+                <div class="form-group">
+                    <label for="filter-type">Event Type</label>
+                    <select id="filter-type" name="type" class="form-input">
+                        <option value="">All Events</option>
+                        {% for et in event_types %}
+                        <option value="{{ et }}" {% if et == current_type %}selected{% endif %}>
+                            {{ et | replace('_', ' ') | title }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="filter-days">Time Range</label>
+                    <select id="filter-days" name="days" class="form-input">
+                        <option value="1" {% if current_days == '1' %}selected{% endif %}>Last 24 hours</option>
+                        <option value="7" {% if current_days == '7' %}selected{% endif %}>Last 7 days</option>
+                        <option value="30" {% if current_days == '30' %}selected{% endif %}>Last 30 days</option>
+                        <option value="90" {% if current_days == '90' %}selected{% endif %}>Last 90 days</option>
+                        <option value="0" {% if current_days == '0' %}selected{% endif %}>All time</option>
+                    </select>
+                </div>
+                <div class="form-group filter-actions">
+                    <button type="submit" class="btn btn-primary">Apply Filters</button>
+                    <a href="{{ url_for('auth.activity_log') }}" class="btn btn-ghost">Clear</a>
+                </div>
+            </div>
+        </form>
+    </div>
+    
+    <!-- Log Entries -->
+    <div class="activity-list card">
+        {% if logs %}
+        <div class="log-table-wrapper">
+            <table class="log-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Event</th>
+                        {% if is_admin %}<th>User</th>{% endif %}
+                        <th>Details</th>
+                        <th>IP Address</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in logs %}
+                    <tr class="{% if not log.success %}log-failed{% endif %}">
+                        <td class="log-time">
+                            <span class="time-date">{{ log.timestamp.strftime('%Y-%m-%d') }}</span>
+                            <span class="time-clock">{{ log.timestamp.strftime('%H:%M:%S') }}</span>
+                        </td>
+                        <td class="log-event">
+                            <span class="event-badge event-{{ log.event_type | replace('_', '-') }}">
+                                {{ log.event_type | replace('_', ' ') | title }}
+                            </span>
+                        </td>
+                        {% if is_admin %}
+                        <td class="log-user">{{ log.username or '—' }}</td>
+                        {% endif %}
+                        <td class="log-details">
+                            {% if log.event_details %}
+                            <span class="details-text" title="{{ log.event_details }}">
+                                {{ log.event_details[:100] }}{% if log.event_details|length > 100 %}...{% endif %}
+                            </span>
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td class="log-ip">
+                            <code>{{ log.ip_address or '—' }}</code>
+                        </td>
+                        <td class="log-status">
+                            {% if log.success %}
+                            <span class="status-badge status-success" title="Success">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <polyline points="20 6 9 17 4 12"></polyline>
+                                </svg>
+                            </span>
+                            {% else %}
+                            <span class="status-badge status-failed" title="Failed">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                                </svg>
+                            </span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- Pagination -->
+        {% if pagination.pages > 1 %}
+        <div class="pagination">
+            {% if pagination.has_prev %}
+            <a href="{{ url_for('auth.activity_log', type=current_type, days=current_days, page=pagination.prev_num) }}" class="btn btn-ghost btn-sm">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6"></polyline>
+                </svg>
+                Previous
+            </a>
+            {% endif %}
+            
+            <span class="pagination-info">
+                Page {{ pagination.page }} of {{ pagination.pages }}
+                <span class="text-muted">({{ pagination.total }} entries)</span>
+            </span>
+            
+            {% if pagination.has_next %}
+            <a href="{{ url_for('auth.activity_log', type=current_type, days=current_days, page=pagination.next_num) }}" class="btn btn-ghost btn-sm">
+                Next
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="9 18 15 12 9 6"></polyline>
+                </svg>
+            </a>
+            {% endif %}
+        </div>
+        {% endif %}
+        
+        {% else %}
+        <div class="empty-state">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="16" y1="13" x2="8" y2="13"></line>
+                <line x1="16" y1="17" x2="8" y2="17"></line>
+                <polyline points="10 9 9 9 8 9"></polyline>
+            </svg>
+            <h3>No activity found</h3>
+            <p>No log entries match your filters.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% if is_admin %}
+<!-- Settings Modal -->
+<div id="settings-modal" class="modal hidden">
+    <div class="modal-content modal-sm">
+        <div class="modal-header">
+            <h2>Log Settings</h2>
+            <button class="modal-close" onclick="closeSettingsModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form method="POST" action="{{ url_for('auth.update_activity_settings') }}" id="settings-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                
+                <div class="form-group">
+                    <label for="retention-days">Log Retention (days)</label>
+                    <input type="number" 
+                           id="retention-days" 
+                           name="retention_days" 
+                           class="form-input" 
+                           value="{{ retention_days }}"
+                           min="0"
+                           max="365"
+                           placeholder="90">
+                    <small class="form-help">
+                        Logs older than this will be cleaned up. Set to 0 for unlimited retention (max 365 days).
+                    </small>
+                </div>
+                
+                <div class="retention-info">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="12" y1="16" x2="12" y2="12"></line>
+                        <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                    </svg>
+                    <p>
+                        Current: <strong>{{ retention_days }} days</strong>
+                        {% if retention_days == 0 %}(unlimited){% endif %}
+                        <br>
+                        Total logs: <strong>{{ total_logs }}</strong>
+                    </p>
+                </div>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeSettingsModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="saveSettings()">Save Settings</button>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<style>
+.activity-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: var(--space-6);
+}
+
+.activity-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: var(--space-5);
+}
+
+.activity-title h1 {
+    margin: 0 0 var(--space-1) 0;
+}
+
+.activity-title p {
+    margin: 0;
+}
+
+.activity-actions {
+    display: flex;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+}
+
+.activity-filters {
+    margin-bottom: var(--space-4);
+    padding: var(--space-4);
+}
+
+.filter-form {
+    margin: 0;
+}
+
+.filter-row {
+    display: flex;
+    gap: var(--space-4);
+    align-items: flex-end;
+    flex-wrap: wrap;
+}
+
+.filter-row .form-group {
+    flex: 1;
+    min-width: 150px;
+    margin-bottom: 0;
+}
+
+.filter-row .form-group label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-bottom: var(--space-1);
+}
+
+.filter-actions {
+    display: flex;
+    gap: var(--space-2);
+    flex: 0 0 auto !important;
+    min-width: auto !important;
+}
+
+.activity-list {
+    padding: 0;
+    overflow: hidden;
+}
+
+.log-table-wrapper {
+    overflow-x: auto;
+}
+
+.log-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+}
+
+.log-table thead {
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.log-table th {
+    padding: var(--space-3) var(--space-4);
+    text-align: left;
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.log-table td {
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--border-color);
+    vertical-align: middle;
+}
+
+.log-table tbody tr:hover {
+    background: var(--bg-hover);
+}
+
+.log-table tbody tr.log-failed {
+    background: rgba(239, 68, 68, 0.05);
+}
+
+.log-table tbody tr.log-failed:hover {
+    background: rgba(239, 68, 68, 0.1);
+}
+
+.log-time {
+    white-space: nowrap;
+}
+
+.time-date {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.time-clock {
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+    margin-left: var(--space-2);
+}
+
+.log-event {
+    white-space: nowrap;
+}
+
+.event-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: var(--radius-full);
+    font-size: 0.75rem;
+    font-weight: 500;
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+}
+
+/* Event type colors */
+.event-badge.event-login,
+.event-badge.event-kuma-connect {
+    background: rgba(34, 197, 94, 0.15);
+    color: #22c55e;
+}
+
+.event-badge.event-login-failed,
+.event-badge.event-recovery-failed {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+}
+
+.event-badge.event-logout,
+.event-badge.event-disconnect {
+    background: rgba(107, 114, 128, 0.15);
+    color: #6b7280;
+}
+
+.event-badge.event-bulk-edit,
+.event-badge.event-monitors-deleted {
+    background: rgba(139, 92, 246, 0.15);
+    color: #8b5cf6;
+}
+
+.event-badge.event-2fa-enabled,
+.event-badge.event-2fa-disabled,
+.event-badge.event-password-changed {
+    background: rgba(245, 158, 11, 0.15);
+    color: #f59e0b;
+}
+
+.event-badge.event-servers-exported,
+.event-badge.event-servers-imported,
+.event-badge.event-activity-log-exported {
+    background: rgba(59, 130, 246, 0.15);
+    color: #3b82f6;
+}
+
+.log-user {
+    color: var(--text-secondary);
+}
+
+.log-details {
+    max-width: 300px;
+}
+
+.details-text {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: help;
+}
+
+.log-ip code {
+    font-size: 0.8125rem;
+    background: var(--bg-tertiary);
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+}
+
+.log-status {
+    text-align: center;
+}
+
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: var(--radius-full);
+}
+
+.status-badge.status-success {
+    background: rgba(34, 197, 94, 0.15);
+    color: #22c55e;
+}
+
+.status-badge.status-failed {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+}
+
+.pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-4);
+    padding: var(--space-4);
+    border-top: 1px solid var(--border-color);
+}
+
+.pagination-info {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.empty-state {
+    text-align: center;
+    padding: var(--space-12) var(--space-6);
+    color: var(--text-muted);
+}
+
+.empty-state svg {
+    margin-bottom: var(--space-4);
+    opacity: 0.5;
+}
+
+.empty-state h3 {
+    margin: 0 0 var(--space-2) 0;
+    color: var(--text-primary);
+}
+
+.empty-state p {
+    margin: 0;
+}
+
+.log-stats {
+    color: var(--text-muted);
+    font-size: 0.8125rem;
+}
+
+/* Settings Modal */
+.retention-info {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    margin-top: var(--space-4);
+}
+
+.retention-info svg {
+    color: var(--primary-light);
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+
+.retention-info p {
+    margin: 0;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+
+.modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: var(--space-4);
+}
+
+.modal.hidden {
+    display: none;
+}
+
+.modal-content {
+    background: var(--bg-card);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-xl);
+    max-width: 500px;
+    width: 100%;
+    max-height: 90vh;
+    overflow: auto;
+}
+
+.modal-sm .modal-content {
+    max-width: 400px;
+}
+
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-4) var(--space-5);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.modal-header h2 {
+    margin: 0;
+    font-size: 1.125rem;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.5rem;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+}
+
+.modal-close:hover {
+    color: var(--text-primary);
+}
+
+.modal-body {
+    padding: var(--space-5);
+}
+
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-3);
+    padding: var(--space-4) var(--space-5);
+    border-top: 1px solid var(--border-color);
+}
+
+@media (max-width: 768px) {
+    .activity-container {
+        padding: var(--space-4);
+    }
+    
+    .activity-header {
+        flex-direction: column;
+        gap: var(--space-3);
+    }
+    
+    .filter-row {
+        flex-direction: column;
+    }
+    
+    .filter-row .form-group {
+        width: 100%;
+    }
+    
+    .log-table {
+        font-size: 0.8125rem;
+    }
+    
+    .log-table th,
+    .log-table td {
+        padding: var(--space-2) var(--space-3);
+    }
+    
+    .time-clock {
+        display: block;
+        margin-left: 0;
+        margin-top: 2px;
+    }
+    
+    .log-details {
+        max-width: 150px;
+    }
+}
+</style>
+
+<script>
+function exportLogs() {
+    const type = document.getElementById('filter-type').value;
+    const days = document.getElementById('filter-days').value;
+    
+    let url = '{{ url_for("auth.export_activity_log") }}';
+    const params = new URLSearchParams();
+    if (type) params.append('type', type);
+    if (days) params.append('days', days);
+    
+    if (params.toString()) {
+        url += '?' + params.toString();
+    }
+    
+    window.location.href = url;
+}
+
+function confirmCleanup() {
+    const retention = {{ retention_days }};
+    if (retention === 0) {
+        alert('Log retention is set to unlimited. Please change the retention setting first.');
+        return false;
+    }
+    return confirm(`This will delete all log entries older than ${retention} days.\n\nThis action cannot be undone. Continue?`);
+}
+
+{% if is_admin %}
+function showSettingsModal() {
+    document.getElementById('settings-modal').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeSettingsModal() {
+    document.getElementById('settings-modal').classList.add('hidden');
+    document.body.style.overflow = '';
+}
+
+function saveSettings() {
+    document.getElementById('settings-form').submit();
+}
+
+// Close modal on backdrop click
+document.addEventListener('click', function(e) {
+    if (e.target.classList.contains('modal')) {
+        closeSettingsModal();
+    }
+});
+
+// Close modal on escape
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        closeSettingsModal();
+    }
+});
+{% endif %}
+</script>
+{% endblock %}
