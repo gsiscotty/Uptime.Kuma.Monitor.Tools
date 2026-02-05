@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Login - Kuma Management Console{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+    <div class="auth-card">
+        <div class="auth-header">
+            <div class="auth-logo">
+                <svg viewBox="0 0 48 48" width="64" height="64" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="24" cy="24" r="20" fill="#8b5cf6"/>
+                    <circle cx="10" cy="12" r="6" fill="#8b5cf6"/>
+                    <circle cx="38" cy="12" r="6" fill="#8b5cf6"/>
+                    <circle cx="10" cy="12" r="3" fill="#a78bfa"/>
+                    <circle cx="38" cy="12" r="3" fill="#a78bfa"/>
+                    <ellipse cx="24" cy="26" rx="14" ry="12" fill="#c4b5fd"/>
+                    <circle cx="18" cy="22" r="3" fill="#1e1b4b"/>
+                    <circle cx="30" cy="22" r="3" fill="#1e1b4b"/>
+                    <circle cx="19" cy="21" r="1" fill="white"/>
+                    <circle cx="31" cy="21" r="1" fill="white"/>
+                    <ellipse cx="24" cy="28" rx="2" ry="1.5" fill="#7c3aed"/>
+                    <path d="M20 32 Q24 36 28 32" stroke="#7c3aed" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+                    <path d="M16 38 L20 38 L22 34 L24 42 L26 36 L28 38 L32 38" stroke="#22c55e" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </div>
+            <h1>Kuma Management Console</h1>
+            <p>Sign in to manage your monitors</p>
+        </div>
+
+        <form method="POST" class="auth-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            
+            {% if show_2fa %}
+            {# Hidden fields to preserve credentials during 2FA step #}
+            <input type="hidden" name="username" value="{{ username }}">
+            <input type="hidden" name="password" value="{{ password }}">
+            
+            <div class="form-group">
+                <label for="totp_token">Two-Factor Authentication Code</label>
+                <input type="text" 
+                       id="totp_token" 
+                       name="totp_token" 
+                       class="form-input" 
+                       placeholder="Enter 6-digit code"
+                       autocomplete="one-time-code"
+                       inputmode="numeric"
+                       pattern="[0-9]{6}"
+                       maxlength="6"
+                       autofocus
+                       required>
+                <small class="form-help">Enter the code from your authenticator app</small>
+            </div>
+            
+            <div class="recovery-link">
+                <a href="{{ url_for('auth.recovery', username=username) }}">Lost access to authenticator? Use recovery code</a>
+            </div>
+            {% else %}
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" 
+                       id="username" 
+                       name="username" 
+                       class="form-input" 
+                       placeholder="Enter username"
+                       autocomplete="username"
+                       required
+                       autofocus>
+            </div>
+
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" 
+                       id="password" 
+                       name="password" 
+                       class="form-input" 
+                       placeholder="Enter password"
+                       autocomplete="current-password"
+                       required>
+            </div>
+            {% endif %}
+
+            <button type="submit" class="btn btn-primary btn-block">
+                {% if show_2fa %}Verify{% else %}Sign In{% endif %}
+            </button>
+        </form>
+
+        <div class="auth-footer">
+            {% if request.is_secure or request.headers.get('X-Forwarded-Proto') == 'https' %}
+            <p class="security-note secure">
+                🔒 This connection is secure
+            </p>
+            {% else %}
+            <p class="security-note insecure">
+                ⚠️ This connection is not secure
+            </p>
+            <p class="security-warning">
+                You are using HTTP. For production use, please use a reverse proxy with HTTPS.
+            </p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}

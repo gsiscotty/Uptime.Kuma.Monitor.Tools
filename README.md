@@ -89,10 +89,108 @@ Before any change, monitors can be filtered by:
 
 ---
 
+---
+
+## Web Interface (Kuma Management Console)
+
+A secure, responsive web interface is available for managing Uptime Kuma monitors. It provides the same functionality as the CLI tools but accessible from any browser.
+
+### Features
+
+- **Two-layer authentication**
+  - Web app login (username/password + optional TOTP 2FA)
+  - Kuma connection credentials (separate from web login)
+  - 2FA recovery codes for account recovery
+- **Security**
+  - CSRF protection
+  - Rate limiting (5 login attempts/minute)
+  - Account lockout after failed attempts
+  - Secure session management
+  - Security headers (CSP, X-Frame-Options, etc.)
+  - Encrypted credential storage for saved servers
+- **Saved Servers**
+  - Save multiple Kuma server connections
+  - Export/import server configurations
+  - Automatic TOTP token generation (optional)
+- **Activity Logging**
+  - Full audit trail of all actions
+  - Configurable retention (default 90 days)
+  - Export logs for compliance/review
+- **System Management**
+  - Create/delete tags and groups
+  - Delete monitors in bulk
+- **Responsive design** - Works on desktop and mobile
+- **Real-time filtering** - Filter monitors by name, tags, groups, type, status
+- **Filter negation** - Exclude monitors matching specific criteria
+- **Bulk operations** - Same capabilities as CLI tools
+
+### Quick Start with Docker
+
+```bash
+# Clone the repository
+git clone https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools
+cd Uptime.Kuma.Monitor.Tools
+
+# Copy and configure environment
+cp .env.example .env
+# Edit .env and set a secure SECRET_KEY
+
+# Build and run
+docker-compose up -d
+
+# Access at http://localhost:5000
+```
+
+On first access, you'll be prompted to create an admin account.
+
+### Komodo Deployment
+
+The web interface is designed for deployment with Komodo. Simply point Komodo to your Git repository containing this code, and it will automatically build and deploy the Docker container.
+
+**Environment variables for Komodo:**
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SECRET_KEY` | Session encryption key (required) | - |
+| `SESSION_LIFETIME` | Session timeout in seconds | 1800 |
+| `MAX_LOGIN_ATTEMPTS` | Failed attempts before lockout | 5 |
+| `LOCKOUT_DURATION` | Lockout duration in minutes | 15 |
+| `REQUIRE_2FA` | Force 2FA for all users | false |
+| `ALLOWED_IPS` | IP allowlist (comma-separated) | (all) |
+
+### Reverse Proxy Setup
+
+For production, use a reverse proxy (nginx, Traefik, Synology) with TLS:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name kuma-editor.example.com;
+    
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+    
+    location / {
+        proxy_pass http://localhost:5000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+---
+
 ## Requirements
 
+### CLI Tools
 - Python 3.9 or newer
 - Uptime Kuma 1.23+ (recommended)
+- Network access to the Kuma instance
+
+### Web Interface
+- Docker (recommended) or Python 3.10+
 - Network access to the Kuma instance
 
 ### Python Dependencies

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="theme-color" content="#0f172a">
+    <meta name="color-scheme" content="dark">
+    <title>{% block title %}Kuma Management Console{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    {% block head %}{% endblock %}
+</head>
+<body>
+    {% if session.get('user_id') %}
+    <nav class="navbar">
+        <div class="navbar-brand">
+            <a href="{{ url_for('main.index') }}">
+                <span class="logo">
+                    <svg viewBox="0 0 48 48" width="32" height="32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <!-- Kuma head -->
+                        <circle cx="24" cy="24" r="20" fill="#8b5cf6"/>
+                        <!-- Ears -->
+                        <circle cx="10" cy="12" r="6" fill="#8b5cf6"/>
+                        <circle cx="38" cy="12" r="6" fill="#8b5cf6"/>
+                        <circle cx="10" cy="12" r="3" fill="#a78bfa"/>
+                        <circle cx="38" cy="12" r="3" fill="#a78bfa"/>
+                        <!-- Face -->
+                        <ellipse cx="24" cy="26" rx="14" ry="12" fill="#c4b5fd"/>
+                        <!-- Eyes -->
+                        <circle cx="18" cy="22" r="3" fill="#1e1b4b"/>
+                        <circle cx="30" cy="22" r="3" fill="#1e1b4b"/>
+                        <circle cx="19" cy="21" r="1" fill="white"/>
+                        <circle cx="31" cy="21" r="1" fill="white"/>
+                        <!-- Nose -->
+                        <ellipse cx="24" cy="28" rx="2" ry="1.5" fill="#7c3aed"/>
+                        <!-- Mouth -->
+                        <path d="M20 32 Q24 36 28 32" stroke="#7c3aed" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+                        <!-- Heart monitor line on belly -->
+                        <path d="M16 38 L20 38 L22 34 L24 42 L26 36 L28 38 L32 38" stroke="#22c55e" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </span>
+                <span class="brand-text">Kuma Management Console</span>
+            </a>
+        </div>
+        <div class="navbar-menu">
+            {% if session.get('kuma_connected') %}
+            <a href="{{ url_for('main.editor') }}" class="connection-status connected" id="connection-status" data-url="{{ session.get('kuma_url', '') }}" title="Go to editor">
+                <span class="status-dot" id="status-dot">●</span> 
+                Selected server: <strong>{{ session.get('kuma_server_name', session.get('kuma_url', 'Kuma')) | truncate(25) }}</strong>
+            </a>
+            <button type="button" class="btn btn-sm btn-primary" onclick="reconnectToKuma()" id="reconnect-btn" title="Reconnect for fresh data">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M23 4v6h-6M1 20v-6h6"/>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                </svg>
+                Reconnect
+            </button>
+            <a href="{{ url_for('kuma.disconnect') }}" class="btn btn-sm btn-ghost">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/>
+                    <line x1="12" y1="2" x2="12" y2="12"/>
+                </svg>
+                Disconnect
+            </a>
+            {% else %}
+            <span class="connection-status disconnected" id="connection-status">
+                <span class="status-dot">●</span> Not connected
+            </span>
+            {% endif %}
+            <a href="{{ url_for('auth.activity_log') }}" class="btn btn-sm btn-ghost">Activity</a>
+            <a href="{{ url_for('auth.settings') }}" class="btn btn-sm btn-ghost">Settings</a>
+            <a href="{{ url_for('auth.logout') }}" class="btn btn-sm btn-ghost">Logout</a>
+        </div>
+        <button class="navbar-toggle" onclick="toggleMobileMenu()">☰</button>
+    </nav>
+    {% endif %}
+
+    <main class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        <div class="flash-messages">
+            {% for category, message in messages %}
+            <div class="alert alert-{{ category }}" onclick="this.remove()">
+                {{ message }}
+                <button class="alert-close">&times;</button>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endwith %}
+
+        {# Changes notification banner #}
+        <div id="changes-banner" class="changes-banner hidden">
+            <div class="changes-banner-content">
+                <span class="changes-banner-icon">ℹ️</span>
+                <span class="changes-banner-text">Changes were made. Reconnect for fully updated data.</span>
+                <button type="button" class="btn btn-sm btn-ghost" onclick="showChangesBannerInfo()">Why?</button>
+                <button type="button" class="btn btn-sm btn-primary" onclick="reconnectToKuma()">Reconnect</button>
+                <button type="button" class="changes-banner-close" onclick="hideChangesBanner()" title="Dismiss">&times;</button>
+            </div>
+            <div id="changes-banner-info" class="changes-banner-info hidden">
+                <p><strong>Why reconnect?</strong></p>
+                <p>Uptime Kuma uses WebSocket connections that maintain cached data. After making changes:</p>
+                <ul>
+                    <li>New monitors, tags, or groups may not appear immediately</li>
+                    <li>Deleted items might still show in lists</li>
+                    <li>Changed properties may display stale values</li>
+                </ul>
+                <p>Reconnecting establishes a fresh connection and pulls all data directly from Uptime Kuma, ensuring you see the most accurate state.</p>
+            </div>
+        </div>
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <p>
+            Kuma Management Console <span class="version">v{{ app_version }}</span>
+            <span class="footer-divider">|</span>
+            Addon built for <a href="https://github.com/louislam/uptime-kuma" target="_blank" rel="noopener">Uptime Kuma</a> by <a href="https://github.com/gsiscotty" target="_blank" rel="noopener">gsiscotty</a>
+        </p>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
