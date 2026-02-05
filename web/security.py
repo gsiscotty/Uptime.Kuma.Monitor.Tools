@@ -31,8 +31,16 @@ limiter = Limiter(
 
 def add_security_headers(response):
     """Add security headers to response."""
-    # Prevent clickjacking
-    response.headers['X-Frame-Options'] = 'DENY'
+    import os
+    
+    # Check if running behind a proxy (relaxed security mode)
+    relaxed_mode = os.environ.get('RELAXED_SECURITY', 'false').lower() == 'true'
+    
+    # Prevent clickjacking (allow framing if behind proxy)
+    if relaxed_mode:
+        response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    else:
+        response.headers['X-Frame-Options'] = 'DENY'
     
     # Prevent MIME type sniffing
     response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -43,18 +51,31 @@ def add_security_headers(response):
     # Referrer policy
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
     
-    # Content Security Policy
-    csp = (
-        "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "  # Allow inline for Alpine.js
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "  # Allow inline styles and Google Fonts
-        "img-src 'self' data:; "                # Allow data URIs for QR codes
-        "font-src 'self' https://fonts.gstatic.com; "  # Allow Google Fonts
-        "connect-src 'self'; "
-        "frame-ancestors 'none'; "
-        "form-action 'self'; "
-        "base-uri 'self'"
-    )
+    # Content Security Policy - relaxed for proxy setups
+    if relaxed_mode:
+        csp = (
+            "default-src 'self' *; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com *; "
+            "img-src 'self' data: https: *; "
+            "font-src 'self' https://fonts.gstatic.com data: *; "
+            "connect-src 'self' https: wss: *; "
+            "frame-ancestors 'self'; "
+            "form-action 'self' *; "
+            "base-uri 'self'"
+        )
+    else:
+        csp = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "img-src 'self' data:; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "connect-src 'self'; "
+            "frame-ancestors 'none'; "
+            "form-action 'self'; "
+            "base-uri 'self'"
+        )
     response.headers['Content-Security-Policy'] = csp
     
     # Permissions Policy (formerly Feature-Policy)
