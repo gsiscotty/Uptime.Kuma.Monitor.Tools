@@ -90,17 +90,9 @@ def add_security_headers(response):
         )
     response.headers['Content-Security-Policy'] = csp
     
-    # Permissions Policy (formerly Feature-Policy)
-    response.headers['Permissions-Policy'] = (
-        "accelerometer=(), "
-        "camera=(), "
-        "geolocation=(), "
-        "gyroscope=(), "
-        "magnetometer=(), "
-        "microphone=(), "
-        "payment=(), "
-        "usb=()"
-    )
+    # Permissions Policy - only set essential restrictions
+    # Note: Many Chrome-specific features cause console warnings if listed
+    response.headers['Permissions-Policy'] = "camera=(), microphone=(), geolocation=()"
     
     # Cache control for sensitive pages
     if request.endpoint and 'static' not in request.endpoint:

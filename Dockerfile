@@ -35,7 +35,7 @@ FROM python:3.12-slim
 
 LABEL maintainer="gsiscotty"
 LABEL description="Kuma Management Console - Web interface for Uptime Kuma management"
-LABEL version="1.0.0-beta"
+LABEL version="1.5.0"
 
 WORKDIR /app
 

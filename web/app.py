@@ -105,10 +105,25 @@ def create_app(config=None):
     # Initialize extensions
     db.init_app(app)
     
-    # CSRF protection (disabled via config in unsafe mode, but must be initialized for templates)
+    # CSRF protection
     if unsafe_mode:
+        # Completely disable CSRF in unsafe mode
         app.config['WTF_CSRF_ENABLED'] = False
-    CSRFProtect(app)
+        app.config['WTF_CSRF_CHECK_DEFAULT'] = False
+        app.config['WTF_CSRF_SSL_STRICT'] = False
+        app.config['WTF_CSRF_METHODS'] = []  # Don't check any methods
+        
+        # Provide dummy csrf_token for templates
+        @app.context_processor
+        def csrf_token_processor():
+            def csrf_token():
+                return ''
+            return {'csrf_token': csrf_token}
+    else:
+        # For external proxies: disable SSL strict mode (referrer check)
+        # This keeps CSRF token validation but removes the referrer/host matching
+        app.config['WTF_CSRF_SSL_STRICT'] = False
+        CSRFProtect(app)
     
     limiter.init_app(app)
     
