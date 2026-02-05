@@ -105,9 +105,10 @@ def create_app(config=None):
     # Initialize extensions
     db.init_app(app)
     
-    # CSRF protection (disabled in unsafe mode)
-    if not unsafe_mode:
-        CSRFProtect(app)
+    # CSRF protection (disabled via config in unsafe mode, but must be initialized for templates)
+    if unsafe_mode:
+        app.config['WTF_CSRF_ENABLED'] = False
+    CSRFProtect(app)
     
     limiter.init_app(app)
     
