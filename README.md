@@ -27,7 +27,8 @@ If `docker compose ps` shows `kuma-management-console` as `Up` (or `healthy`), y
 │   ├── kuma-bulk-editor/         # CLI application
 │   └── kuma-notifications-editor/# CLI application
 ├── addons/
-│   └── mount-monitor/            # Optional mount/filesystem monitor addon
+│   ├── mount-monitor/            # Optional mount/filesystem monitor addon
+│   └── unix-storage-monitor/     # Optional SMART + storage monitor addon
 └── docs/                         # Shared screenshots/docs assets
 ```
 
@@ -40,6 +41,24 @@ If `docker compose ps` shows `kuma-management-console` as `Up` (or `healthy`), y
    - `apps/kuma-bulk-editor/README.md` (CLI bulk editor)
    - `apps/kuma-notifications-editor/README.md` (CLI notifications editor)
    - `addons/mount-monitor/README.md` (mount addon)
+   - `addons/unix-storage-monitor/README.md` (Ubuntu/Unix SMART + storage addon)
+   - `addons/README.md` (addon index + quick installer commands)
+
+## Quick Addon Install
+
+Install add-ons directly from GitHub raw links:
+
+### Mount monitor addon
+
+```bash
+curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/mount-monitor/install.sh | bash
+```
+
+### Unix storage/SMART addon
+
+```bash
+curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-storage-monitor/install.sh | bash
+```
 
 ## Choose one path
 
@@ -63,6 +82,12 @@ Use either:
 Use:
 
 - `addons/mount-monitor/README.md`
+
+### Path D: Unix storage/SMART addon
+
+Use:
+
+- `addons/unix-storage-monitor/README.md`
 
 ## Web UI preview (what you will see)
 
