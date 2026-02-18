@@ -84,7 +84,7 @@ if [ "${PY_MAJOR}" -lt ${MIN_PYTHON_MAJOR} ] || { [ "${PY_MAJOR}" -eq ${MIN_PYTH
     err "Python ${MIN_PYTHON_MAJOR}.${MIN_PYTHON_MINOR}+ required."
     exit 1
 fi
-info "Python $(python3 -c 'import sys; print(f\"{sys.version_info.major}.{sys.version_info.minor}\")') found"
+info "Python $(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")') found"
 
 if command -v curl >/dev/null 2>&1; then
     DOWNLOADER="curl"
