@@ -268,11 +268,13 @@ def check_storage(debug: bool = False) -> Tuple[str, List[str], float]:
     t0 = time.perf_counter()
     lines: List[str] = []
     status = "up"
+    max_fs_latency_ms = 0.0
 
     rc, out = _run_cmd(["df", "-P", "-x", "tmpfs", "-x", "devtmpfs"], timeout_sec=10)
     if rc != 0:
         return "down", [f"df failed: {out.strip()}"], _latency_ms(t0)
 
+    fs_summary: List[str] = []
     for line in out.splitlines()[1:]:
         cols = line.split()
         if len(cols) < 6:
@@ -284,6 +286,22 @@ def check_storage(debug: bool = False) -> Tuple[str, List[str], float]:
             pct = int(used.rstrip("%"))
         except ValueError:
             continue
+
+        free_pct = max(0, 100 - pct)
+        fs_summary.append(f"{mpoint} ({fs}): used={pct}% free={free_pct}%")
+
+        # Probe filesystem metadata latency for a host-relevant storage ping signal.
+        tfs = time.perf_counter()
+        try:
+            os.statvfs(mpoint)
+            lat = _latency_ms(tfs)
+            max_fs_latency_ms = max(max_fs_latency_ms, lat)
+            if debug:
+                print(f"    [storage] {mpoint}: statvfs latency {lat:.2f}ms")
+        except OSError as e:
+            if debug:
+                print(f"    [storage] {mpoint}: statvfs failed: {e}")
+
         if pct >= USAGE_DOWN_PCT:
             status = "down"
             lines.append(f"FS {mpoint} ({fs}): {pct}% used (critical)")
@@ -304,23 +322,19 @@ def check_storage(debug: bool = False) -> Tuple[str, List[str], float]:
                 status = "warning"
             lines.append("mdraid maintenance/rebuild in progress")
 
-    rc, syno = _run_cmd(["synospace", "--enum"], timeout_sec=15)
-    if rc == 0:
-        if re.search(r"degraded", syno, flags=re.IGNORECASE):
-            status = "down"
-            lines.append("Synology storage: degraded state detected")
-        elif re.search(r"repairing|rebuild|parity", syno, flags=re.IGNORECASE):
-            if _severity(status) < _severity("warning"):
-                status = "warning"
-            lines.append("Synology storage: maintenance/rebuild in progress")
-        elif debug:
-            lines.append("Synology storage: healthy")
-    elif debug:
-        lines.append("synospace not available on this host (expected on non-Synology)")
+    # Always include storage usage overview to make checks/debug more informative.
+    if fs_summary:
+        lines.append("Filesystems:")
+        lines.extend(f"  {item}" for item in fs_summary)
+
+    # Prefer storage probe latency as ping signal; fall back to total check duration.
+    check_elapsed_ms = _latency_ms(t0)
+    ping_ms = max_fs_latency_ms if max_fs_latency_ms > 0 else check_elapsed_ms
+    lines.append(f"Storage latency basis: {ping_ms:.2f}ms")
 
     if not lines:
         lines.append("Storage checks OK (usage/RAID)")
-    return status, lines, _latency_ms(t0)
+    return status, lines, ping_ms
 
 
 def check_host(mode: str, devices: List[str], debug: bool = False) -> Tuple[str, str, float]:
@@ -333,6 +347,8 @@ def check_host(mode: str, devices: List[str], debug: bool = False) -> Tuple[str,
         max_latency = max(max_latency, s_lat)
         if _severity(s_status) > _severity(worst):
             worst = s_status
+        if debug:
+            print(f"    [smart] section latency {s_lat:.2f}ms")
         sections.append("SMART:\n" + "\n".join(f"  • {x}" for x in s_lines))
 
     if mode in ("storage", "both"):
@@ -340,6 +356,8 @@ def check_host(mode: str, devices: List[str], debug: bool = False) -> Tuple[str,
         max_latency = max(max_latency, st_lat)
         if _severity(st_status) > _severity(worst):
             worst = st_status
+        if debug:
+            print(f"    [storage] section latency {st_lat:.2f}ms")
         sections.append("Storage:\n" + "\n".join(f"  • {x}" for x in st_lines))
 
     now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
