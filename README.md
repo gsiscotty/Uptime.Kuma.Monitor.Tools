@@ -49,6 +49,7 @@ Do this first unless you specifically want CLI-only usage:
 
 - Use the commands in "Stop here if you just want it running"
 - Then follow `main/README.md` for first-run details (secret key and troubleshooting)
+- See UI preview screenshots in `apps/kuma-management-console/README.md`
 
 ### Path B: CLI scripts only (no web UI)
 
@@ -62,3 +63,27 @@ Use either:
 Use:
 
 - `addons/mount-monitor/README.md`
+
+## Web UI preview (what you will see)
+
+Login and 2FA:
+
+| Login | 2FA |
+|---|---|
+| ![Login screen](docs/screenshots/01-login.png) | ![2FA screen](docs/screenshots/02-2fa.png) |
+
+Saved servers:
+
+![Saved servers screen](docs/screenshots/03-servers.png)
+
+Filtering and bulk changes:
+
+| Filters | Bulk changes |
+|---|---|
+| ![Filters screen](docs/screenshots/04-filters.png) | ![Bulk changes screen](docs/screenshots/05-bulk-changes.png) |
+
+Tag and activity management:
+
+| Manage tags | Activity log |
+|---|---|
+| ![Manage tags screen](docs/screenshots/06-manage-tags.png) | ![Activity log screen](docs/screenshots/07-activity-log.png) |
