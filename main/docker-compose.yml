@@ -6,7 +6,7 @@
 services:
   kuma-console:
     build:
-      context: .
+      context: ../apps/kuma-management-console
       dockerfile: Dockerfile
     container_name: kuma-management-console
     restart: unless-stopped

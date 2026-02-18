@@ -25,7 +25,7 @@ set -euo pipefail
 REPO="gsiscotty/Uptime.Kuma.Monitor.Tools"
 BRANCH="main"
 SCRIPT_NAME="mount-monitor.py"
-REMOTE_PATH="Unix/Ubuntu/Mount.Monitor/${SCRIPT_NAME}"
+REMOTE_PATH="addons/mount-monitor/${SCRIPT_NAME}"
 RAW_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${REMOTE_PATH}"
 DEFAULT_INSTALL_DIR="/opt/mount-monitor"
 MIN_PYTHON_MAJOR=3

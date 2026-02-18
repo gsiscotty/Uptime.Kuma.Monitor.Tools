@@ -48,7 +48,6 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy application code
 COPY web/ ./web/
-COPY kuma-bulk-editor.py ./
 
 # Create data directory for SQLite
 RUN mkdir -p /app/data && chown -R appuser:appuser /app
