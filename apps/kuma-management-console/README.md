@@ -11,13 +11,16 @@ Secure web application for bulk management of Uptime Kuma monitors, tags, groups
 
 ## Run with Docker (via main compose)
 
-Use the top-level main integration:
+Use the top-level main integration (recommended):
 
 ```bash
 cd main
-cp .env.example .env
-docker compose up -d
+cp -n .env.example .env
+docker compose up -d --build
+docker compose ps
 ```
+
+Open `http://localhost:5080`.
 
 ## Run app directly (without Docker)
 
