@@ -270,7 +270,7 @@ def check_storage(debug: bool = False) -> Tuple[str, List[str], float]:
     status = "up"
     max_fs_latency_ms = 0.0
 
-    rc, out = _run_cmd(["df", "-P", "-x", "tmpfs", "-x", "devtmpfs"], timeout_sec=10)
+    rc, out = _run_cmd(["df", "-P", "-x", "tmpfs", "-x", "devtmpfs", "-x", "squashfs"], timeout_sec=10)
     if rc != 0:
         return "down", [f"df failed: {out.strip()}"], _latency_ms(t0)
 
@@ -280,6 +280,11 @@ def check_storage(debug: bool = False) -> Tuple[str, List[str], float]:
         if len(cols) < 6:
             continue
         fs, used, mpoint = cols[0], cols[4], cols[5]
+        # Ignore snap loop mounts on Ubuntu; these are expected to report 100% used.
+        if fs.startswith("/dev/loop") or mpoint.startswith("/snap/"):
+            if debug:
+                print(f"    [storage] skipped pseudo-fs {mpoint} ({fs})")
+            continue
         if not used.endswith("%"):
             continue
         try:
