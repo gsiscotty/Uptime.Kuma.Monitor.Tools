@@ -37,7 +37,7 @@ Provides the same bulk-edit power as the CLI tools, accessible from any browser.
 ### Quick Start
 
 ```bash
-git clone https://github.com/gsiscotty/kuma-management-console
+git clone https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools
 cd kuma-management-console
 cp .env.example .env
 # Set a secure SECRET_KEY in .env:
@@ -105,7 +105,7 @@ A standalone CLI script that monitors mounted filesystems (NFS, SMB, local drive
 
 ```bash
 # Install with one command:
-curl -sL https://raw.githubusercontent.com/gsiscotty/kuma-management-console/main/Unix/Ubuntu/Mount.Monitor/install.sh | bash
+curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/Unix/Ubuntu/Mount.Monitor/install.sh | bash
 
 # Then run:
 cd /opt/mount-monitor
@@ -129,7 +129,7 @@ See [`Unix/Ubuntu/Mount.Monitor/README.md`](Unix/Ubuntu/Mount.Monitor/README.md)
 ## Installation (CLI tools)
 
 ```bash
-git clone https://github.com/gsiscotty/kuma-management-console
+git clone https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools
 cd kuma-management-console
 
 python3 -m venv venv

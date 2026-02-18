@@ -22,7 +22,7 @@
 
 set -euo pipefail
 
-REPO="gsiscotty/kuma-management-console"
+REPO="gsiscotty/Uptime.Kuma.Monitor.Tools"
 BRANCH="main"
 SCRIPT_NAME="mount-monitor.py"
 REMOTE_PATH="Unix/Ubuntu/Mount.Monitor/${SCRIPT_NAME}"

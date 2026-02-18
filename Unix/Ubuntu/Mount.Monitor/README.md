@@ -23,13 +23,13 @@ Interactive menu tool to monitor mounted shares and filesystems, and report thei
 ## Quick Install
 
 ```bash
-curl -sL https://raw.githubusercontent.com/gsiscotty/kuma-management-console/main/Unix/Ubuntu/Mount.Monitor/install.sh | bash
+curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/Unix/Ubuntu/Mount.Monitor/install.sh | bash
 ```
 
 Or with `wget`:
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/gsiscotty/kuma-management-console/main/Unix/Ubuntu/Mount.Monitor/install.sh | bash
+wget -qO- https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/Unix/Ubuntu/Mount.Monitor/install.sh | bash
 ```
 
 > The installer checks for Python 3.8+, installs it if missing (on supported systems), downloads `mount-monitor.py` to a directory of your choice, and sets secure file permissions.
@@ -37,7 +37,7 @@ wget -qO- https://raw.githubusercontent.com/gsiscotty/kuma-management-console/ma
 ### Prefer to inspect first?
 
 ```bash
-curl -sLO https://raw.githubusercontent.com/gsiscotty/kuma-management-console/main/Unix/Ubuntu/Mount.Monitor/install.sh
+curl -sLO https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/Unix/Ubuntu/Mount.Monitor/install.sh
 cat install.sh     # review it
 bash install.sh    # then run it
 ```
@@ -58,7 +58,7 @@ bash install.sh    # then run it
 ### Step 2 — Install the script
 
 ```bash
-curl -sL https://raw.githubusercontent.com/gsiscotty/kuma-management-console/main/Unix/Ubuntu/Mount.Monitor/install.sh | bash
+curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/Unix/Ubuntu/Mount.Monitor/install.sh | bash
 ```
 
 Default install path: `/opt/mount-monitor/`
