@@ -95,9 +95,19 @@ else
     exit 1
 fi
 
-echo -e "Install directory [${BOLD}${DEFAULT_INSTALL_DIR}${NC}]: \c"
-read_input CUSTOM_DIR || true
-INSTALL_DIR="${CUSTOM_DIR:-${DEFAULT_INSTALL_DIR}}"
+while true; do
+    echo -e "Install directory [${BOLD}${DEFAULT_INSTALL_DIR}${NC}]: \c"
+    read_input CUSTOM_DIR || true
+    INSTALL_DIR="${CUSTOM_DIR:-${DEFAULT_INSTALL_DIR}}"
+
+    # Common paste mistake: user enters shell command instead of path.
+    if [[ "${INSTALL_DIR}" == *"http://"* ]] || [[ "${INSTALL_DIR}" == *"https://"* ]] || [[ "${INSTALL_DIR}" == *"curl "* ]] || [[ "${INSTALL_DIR}" == *"wget "* ]] || [[ "${INSTALL_DIR}" == *"|"* ]] || [[ "${INSTALL_DIR}" == *";"* ]]; then
+        err "This looks like a command, not a directory path."
+        echo "  Enter only a folder path, for example: /opt/unix-storage-monitor"
+        continue
+    fi
+    break
+done
 
 if [ ! -d "${INSTALL_DIR}" ]; then
     warn "Directory ${INSTALL_DIR} does not exist."
