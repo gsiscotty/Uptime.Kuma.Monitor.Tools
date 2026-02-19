@@ -1,0 +1,46 @@
+#!/bin/sh
+
+PACKAGE="synology-monitor"
+INSTALL_DIR="/var/packages/${PACKAGE}/target"
+PYTHON_BIN="/usr/bin/python3"
+PID_FILE="${INSTALL_DIR}/ui.pid"
+LOG_FILE="${INSTALL_DIR}/ui.log"
+
+start_daemon() {
+    if [ -f "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}")" 2>/dev/null; then
+        echo "UI already running"
+        return 0
+    fi
+    if [ ! -x "${PYTHON_BIN}" ]; then
+        echo "python3 not found: ${PYTHON_BIN}"
+        return 1
+    fi
+    nohup "${PYTHON_BIN}" "${INSTALL_DIR}/synology-monitor.py" --ui --host 0.0.0.0 --port 8787 >>"${LOG_FILE}" 2>&1 &
+    echo $! > "${PID_FILE}"
+    echo "UI started"
+}
+
+stop_daemon() {
+    if [ -f "${PID_FILE}" ]; then
+        PID="$(cat "${PID_FILE}")"
+        if kill -0 "${PID}" 2>/dev/null; then
+            kill "${PID}" || true
+        fi
+        rm -f "${PID_FILE}"
+    fi
+    echo "UI stopped"
+}
+
+status_daemon() {
+    if [ -f "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}")" 2>/dev/null; then
+        exit 0
+    fi
+    exit 3
+}
+
+case "$1" in
+    start) start_daemon ;;
+    stop) stop_daemon ;;
+    status) status_daemon ;;
+    *) echo "Usage: $0 {start|stop|status}"; exit 1 ;;
+esac

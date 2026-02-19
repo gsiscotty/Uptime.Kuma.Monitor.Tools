@@ -1,0 +1,17 @@
+#!/bin/sh
+
+PACKAGE="synology-monitor"
+PID_FILE="/var/packages/${PACKAGE}/target/ui.pid"
+HELPER_SCRIPT="/var/packages/${PACKAGE}/target/smart-helper.sh"
+
+if [ -f "${PID_FILE}" ]; then
+    PID="$(cat "${PID_FILE}")"
+    if kill -0 "${PID}" 2>/dev/null; then
+        kill "${PID}" || true
+    fi
+    rm -f "${PID_FILE}"
+fi
+
+rm -f "${HELPER_SCRIPT}" 2>/dev/null || true
+
+exit 0

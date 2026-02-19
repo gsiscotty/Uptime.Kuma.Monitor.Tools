@@ -1,0 +1,10 @@
+{
+  "data-share": [],
+  "port-config": [
+    {
+      "protocol": "tcp",
+      "port": 8787,
+      "description": "Synology Monitor setup UI"
+    }
+  ]
+}

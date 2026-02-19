@@ -28,7 +28,8 @@ If `docker compose ps` shows `kuma-management-console` as `Up` (or `healthy`), y
 │   └── kuma-notifications-editor/# CLI application
 ├── addons/
 │   ├── mount-monitor/            # Optional mount/filesystem monitor addon
-│   └── unix-storage-monitor/     # Optional SMART + storage monitor addon
+│   ├── unix-storage-monitor/     # Optional SMART + storage monitor addon
+│   └── synology-monitor/         # Optional Synology NAS monitor addon
 └── docs/                         # Shared screenshots/docs assets
 ```
 
@@ -60,6 +61,12 @@ curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/m
 curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-storage-monitor/install.sh | bash
 ```
 
+### Synology monitor addon
+
+```bash
+curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/synology-monitor/install.sh | bash
+```
+
 ## Choose one path
 
 ### Path A: Web UI (recommended first)
@@ -88,6 +95,12 @@ Use:
 Use:
 
 - `addons/unix-storage-monitor/README.md`
+
+### Path E: Synology monitor addon
+
+Use:
+
+- `addons/synology-monitor/README.md`
 
 ## Web UI preview (what you will see)
 

@@ -1,0 +1,7 @@
+#!/bin/sh
+
+POSTINST="/var/packages/synology-monitor/scripts/postinst"
+if [ -x "${POSTINST}" ]; then
+    "${POSTINST}" || true
+fi
+exit 0

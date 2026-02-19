@@ -26,6 +26,18 @@ Monitors Ubuntu/Unix storage health and SMART status, then pushes to Uptime Kuma
 curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-storage-monitor/install.sh | bash
 ```
 
+### 3) Synology Monitor
+
+Monitors Synology NAS storage/RAID status and SMART health, then pushes to Uptime Kuma.
+
+- Docs: `addons/synology-monitor/README.md`
+- Community package skeleton: `addons/synology-monitor/community-package/README.md`
+- Installer:
+
+```bash
+curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/synology-monitor/install.sh | bash
+```
+
 ## Notes
 
 - Addons are standalone tools.

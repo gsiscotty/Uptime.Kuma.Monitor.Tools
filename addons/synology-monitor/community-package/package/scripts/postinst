@@ -1,0 +1,35 @@
+#!/bin/sh
+
+PACKAGE="synology-monitor"
+INSTALL_DIR="/var/packages/${PACKAGE}/target"
+SERVICE_SCRIPT="/var/packages/${PACKAGE}/scripts/start-stop-status"
+HELPER_SCRIPT="${INSTALL_DIR}/smart-helper.sh"
+HELPER_LOG="${INSTALL_DIR}/smart-helper.log"
+PYTHON_BIN="/usr/bin/python3"
+
+install_helper_script() {
+    if [ -f "${HELPER_SCRIPT}" ]; then
+        chmod 700 "${HELPER_SCRIPT}" 2>/dev/null || true
+        echo "Keeping existing helper script: ${HELPER_SCRIPT}"
+        return 0
+    fi
+    cat > "${HELPER_SCRIPT}" <<EOF
+#!/bin/sh
+"${PYTHON_BIN}" "${INSTALL_DIR}/synology-monitor.py" --run-smart-helper >>"${HELPER_LOG}" 2>&1
+EOF
+    chmod 700 "${HELPER_SCRIPT}" 2>/dev/null || true
+}
+
+chmod 700 "${INSTALL_DIR}/synology-monitor.py" 2>/dev/null || true
+touch "${INSTALL_DIR}/ui.log" 2>/dev/null || true
+touch "${HELPER_LOG}" 2>/dev/null || true
+chmod 644 "${HELPER_LOG}" 2>/dev/null || true
+install_helper_script
+
+# Auto-start setup UI so no SSH command is needed after install.
+if [ -x "${SERVICE_SCRIPT}" ]; then
+    "${SERVICE_SCRIPT}" start || true
+fi
+
+echo "Post-install complete. Setup UI started on port 8787. Configure SMART helper as root task in DSM UI."
+exit 0
