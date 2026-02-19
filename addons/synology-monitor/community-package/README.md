@@ -10,6 +10,7 @@ It is intentionally minimal, so you can adapt it to your DSM version and signing
 - `package/scripts/*` - install/uninstall/start/stop hooks
 - `package/conf/*` - simple privilege/resource declarations
 - `build-spk.sh` - basic local build helper
+- `RELEASE_CHECKLIST.md` - required release validation steps
 
 ## Build (basic)
 
@@ -98,5 +99,6 @@ The setup UI includes embedded Task Scheduler screenshots to guide users through
 - This package is a community baseline (no signing, no DSM wizard pages).
 - For production distribution, add architecture-specific packaging and signatures.
 - DSM 7.3 privilege policy requires package services to run as `package` user (not root).
+- Build artifacts under `.build/` and `dist/` are generated and should not be committed.
 - EasySystems GmbH: https://www.easysystems.ch/de
 - Copyright: Copyright (c) 2026 EasySystems GmbH. All rights reserved.
