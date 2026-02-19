@@ -21,8 +21,36 @@ chmod +x build-spk.sh
 
 Output:
 - `dist/synology-monitor-basic.spk`
+- `repo/packages.json` (Package Center source index)
 
-## Install
+## Install (GitHub Package Source)
+
+Use this if you do not want manual `.spk` upload each time.
+
+1. Publish `synology-monitor-basic.spk` as a GitHub release asset in your repository.
+2. Commit/push `addons/synology-monitor/community-package/repo/packages.json`.
+3. In DSM: Package Center -> Settings -> Package Sources -> Add
+4. Use this URL pattern as source:
+
+```text
+https://raw.githubusercontent.com/<owner>/<repo>/main/addons/synology-monitor/community-package/repo/packages.json
+```
+
+5. Open your source in Package Center and install/update from there.
+
+The package source JSON points to:
+
+```text
+https://github.com/<owner>/<repo>/releases/latest/download/synology-monitor-basic.spk
+```
+
+Set repository owner/name during build with:
+
+```bash
+GITHUB_REPO=<owner>/<repo> ./build-spk.sh
+```
+
+## Install (Manual Upload)
 
 1. DSM > Package Center > Manual Install
 2. Select `synology-monitor-basic.spk`
