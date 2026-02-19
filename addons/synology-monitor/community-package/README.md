@@ -38,6 +38,26 @@ https://raw.githubusercontent.com/<owner>/<repo>/main/addons/synology-monitor/co
 
 5. Open your source in Package Center and install/update from there.
 
+### Exact URLs for this repository
+
+Use this URL in DSM Package Sources (this is the correct one):
+
+```text
+https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/synology-monitor/community-package/repo/packages.json
+```
+
+Release asset URL expected by the package source:
+
+```text
+https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools/releases/latest/download/synology-monitor-basic.spk
+```
+
+Important: this GitHub page URL is only for browsing files and will NOT work as DSM package source:
+
+```text
+https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools/tree/main/addons/synology-monitor/community-package
+```
+
 The package source JSON points to:
 
 ```text
