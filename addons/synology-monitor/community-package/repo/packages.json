@@ -20,7 +20,7 @@
       "beta": "yes",
       "os_min_ver": "7.0-40000",
       "link": "https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools/releases/latest/download/synology-monitor-basic.spk",
-      "checksum_sha256": "26c5d5a4f03104339946bd675b2350dde01af9b4dcfeff39dd35abfbf5f7817f",
+      "checksum_sha256": "284d9a363a6696b5de22acd9dec126dd35fb7e2f53c42d67c77de476f145c5eb",
       "size": 225280
     }
   ]
