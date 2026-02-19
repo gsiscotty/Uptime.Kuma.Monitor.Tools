@@ -110,3 +110,7 @@ temp/
 *.7z
 *.dmg
 *.iso
+
+# Synology package build artifacts (generated)
+addons/synology-monitor/community-package/.build/
+addons/synology-monitor/community-package/dist/
