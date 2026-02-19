@@ -11,6 +11,7 @@ It is intentionally minimal, so you can adapt it to your DSM version and signing
 - `package/conf/*` - simple privilege/resource declarations
 - `build-spk.sh` - basic local build helper
 - `RELEASE_CHECKLIST.md` - required release validation steps
+- `verify-release.sh` - automated release checks
 
 ## Build (basic)
 
@@ -69,6 +70,22 @@ Set repository owner/name during build with:
 
 ```bash
 GITHUB_REPO=<owner>/<repo> ./build-spk.sh
+```
+
+## Verify release before tagging
+
+Run automated checks:
+
+```bash
+cd addons/synology-monitor/community-package
+chmod +x verify-release.sh
+./verify-release.sh
+```
+
+Optional online validation of the release-asset URL from `repo/packages.json`:
+
+```bash
+ONLINE_CHECK=1 ./verify-release.sh
 ```
 
 ## Install (Manual Upload)
