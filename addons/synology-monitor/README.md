@@ -83,8 +83,13 @@ Back navigation and explicit save/apply behavior matches the other addons.
    python3 synology-monitor.py --ui --host 0.0.0.0 --port 8787
    ```
 3. Open `http://<synology-ip>:8787`.
-4. Select mode (`smart`, `storage`, or `both`), save, then run connection test.
-5. Optional: set cron interval to any value you need in the UI.
+4. Complete first-run security setup:
+   - create local admin password
+   - enroll TOTP 2FA in an authenticator app
+   - save one-time recovery codes (shown once)
+5. Login with password, then TOTP (or one recovery code as fallback).
+6. Select mode (`smart`, `storage`, or `both`), save, then run connection test.
+7. Optional: set cron interval to any value you need in the UI.
 
 ---
 
@@ -134,6 +139,9 @@ The UI supports:
 - create/edit monitor opens as overlay modal from dashboard buttons
 - diagnostics panel now has technician views (logs/task/cache/config/history/paths)
 - setup includes update note: run helper task once after update to refresh elevated cache
+- mandatory UI authentication: password + required TOTP 2FA
+- one-time recovery codes generated at security bootstrap
+- security panel to regenerate recovery codes and rotate TOTP secret
 
 Use the CLI menu for advanced/multi-monitor setup.
 
@@ -145,6 +153,9 @@ Required:
 - `python3` (3.8+)
 - `crontab`
 - Synology `synospace`
+- `werkzeug` (password hashing)
+- `pyotp` (TOTP 2FA)
+- `qrcode` + `Pillow` (QR provisioning image)
 
 For SMART mode:
 - `smartctl` (`smartmontools`)

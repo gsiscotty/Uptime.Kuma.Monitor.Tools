@@ -5,7 +5,14 @@ INSTALL_DIR="/var/packages/${PACKAGE}/target"
 SERVICE_SCRIPT="/var/packages/${PACKAGE}/scripts/start-stop-status"
 HELPER_SCRIPT="${INSTALL_DIR}/smart-helper.sh"
 HELPER_LOG="${INSTALL_DIR}/smart-helper.log"
+SYSLOG_HELPER_SCRIPT="${INSTALL_DIR}/system-log-helper.sh"
+SYSLOG_HELPER_LOG="${INSTALL_DIR}/system-log-helper.log"
+SCHEDULER_SCRIPT="${INSTALL_DIR}/monitor-scheduler.sh"
+SCHEDULER_LOG="${INSTALL_DIR}/monitor-scheduler.log"
 PYTHON_BIN="/usr/bin/python3"
+CRON_MARKER="# synology-monitor smart helper auto"
+SYSLOG_CRON_MARKER="# synology-monitor system log helper auto"
+SCHEDULER_CRON_MARKER="# synology-monitor scheduled checks auto"
 
 install_helper_script() {
     if [ -f "${HELPER_SCRIPT}" ]; then
@@ -20,16 +27,102 @@ EOF
     chmod 700 "${HELPER_SCRIPT}" 2>/dev/null || true
 }
 
+install_helper_schedule() {
+    if command -v crontab >/dev/null 2>&1; then
+        current="$(crontab -l 2>/dev/null || true)"
+        cleaned="$(printf "%s\n" "${current}" | sed "/synology-monitor smart helper auto/d")"
+        {
+            printf "%s\n" "${cleaned}" | sed '/^[[:space:]]*$/d'
+            printf "*/5 * * * * %s %s\n" "${HELPER_SCRIPT}" "${CRON_MARKER}"
+        } | crontab - >/dev/null 2>&1 || true
+    fi
+
+    # Fallback for systems where root crontab is restricted: append to /etc/crontab if writable.
+    if [ -w /etc/crontab ]; then
+        tmp_file="/tmp/${PACKAGE}-crontab.$$"
+        sed "/synology-monitor smart helper auto/d" /etc/crontab >"${tmp_file}" 2>/dev/null || cp /etc/crontab "${tmp_file}"
+        printf "*/5 * * * * root %s %s\n" "${HELPER_SCRIPT}" "${CRON_MARKER}" >>"${tmp_file}"
+        cp "${tmp_file}" /etc/crontab 2>/dev/null || true
+        rm -f "${tmp_file}"
+    fi
+}
+
+install_syslog_helper_script() {
+    if [ -f "${SYSLOG_HELPER_SCRIPT}" ]; then
+        chmod 700 "${SYSLOG_HELPER_SCRIPT}" 2>/dev/null || true
+        return 0
+    fi
+    cat > "${SYSLOG_HELPER_SCRIPT}" <<EOF
+#!/bin/sh
+"${PYTHON_BIN}" "${INSTALL_DIR}/synology-monitor.py" --run-system-log-helper >>"${SYSLOG_HELPER_LOG}" 2>&1
+EOF
+    chmod 700 "${SYSLOG_HELPER_SCRIPT}" 2>/dev/null || true
+}
+
+install_syslog_helper_schedule() {
+    if command -v crontab >/dev/null 2>&1; then
+        current="$(crontab -l 2>/dev/null || true)"
+        cleaned="$(printf "%s\n" "${current}" | sed "/synology-monitor system log helper auto/d")"
+        {
+            printf "%s\n" "${cleaned}" | sed '/^[[:space:]]*$/d'
+            printf "*/5 * * * * %s %s\n" "${SYSLOG_HELPER_SCRIPT}" "${SYSLOG_CRON_MARKER}"
+        } | crontab - >/dev/null 2>&1 || true
+    fi
+
+    if [ -w /etc/crontab ]; then
+        tmp_file="/tmp/${PACKAGE}-crontab-syslog.$$"
+        sed "/synology-monitor system log helper auto/d" /etc/crontab >"${tmp_file}" 2>/dev/null || cp /etc/crontab "${tmp_file}"
+        printf "*/5 * * * * root %s %s\n" "${SYSLOG_HELPER_SCRIPT}" "${SYSLOG_CRON_MARKER}" >>"${tmp_file}"
+        cp "${tmp_file}" /etc/crontab 2>/dev/null || true
+        rm -f "${tmp_file}"
+    fi
+}
+
+install_scheduler_script() {
+    cat > "${SCHEDULER_SCRIPT}" <<EOF
+#!/bin/sh
+"${PYTHON_BIN}" "${INSTALL_DIR}/synology-monitor.py" --run-scheduled >>"${SCHEDULER_LOG}" 2>&1
+EOF
+    chmod 700 "${SCHEDULER_SCRIPT}" 2>/dev/null || true
+}
+
+install_scheduler_schedule() {
+    if command -v crontab >/dev/null 2>&1; then
+        current="$(crontab -l 2>/dev/null || true)"
+        cleaned="$(printf "%s\n" "${current}" | sed "/synology-monitor scheduled checks auto/d")"
+        {
+            printf "%s\n" "${cleaned}" | sed '/^[[:space:]]*$/d'
+            printf "* * * * * %s %s\n" "${SCHEDULER_SCRIPT}" "${SCHEDULER_CRON_MARKER}"
+        } | crontab - >/dev/null 2>&1 || true
+    fi
+    if [ -w /etc/crontab ]; then
+        tmp_file="/tmp/${PACKAGE}-crontab-scheduler.$$"
+        sed "/synology-monitor scheduled checks auto/d" /etc/crontab >"${tmp_file}" 2>/dev/null || cp /etc/crontab "${tmp_file}"
+        printf "* * * * * root %s %s\n" "${SCHEDULER_SCRIPT}" "${SCHEDULER_CRON_MARKER}" >>"${tmp_file}"
+        cp "${tmp_file}" /etc/crontab 2>/dev/null || true
+        rm -f "${tmp_file}"
+    fi
+}
+
 chmod 700 "${INSTALL_DIR}/synology-monitor.py" 2>/dev/null || true
 touch "${INSTALL_DIR}/ui.log" 2>/dev/null || true
 touch "${HELPER_LOG}" 2>/dev/null || true
+touch "${SYSLOG_HELPER_LOG}" 2>/dev/null || true
+touch "${SCHEDULER_LOG}" 2>/dev/null || true
 chmod 644 "${HELPER_LOG}" 2>/dev/null || true
+chmod 644 "${SYSLOG_HELPER_LOG}" 2>/dev/null || true
+chmod 644 "${SCHEDULER_LOG}" 2>/dev/null || true
 install_helper_script
+install_helper_schedule
+install_syslog_helper_script
+install_syslog_helper_schedule
+install_scheduler_script
+install_scheduler_schedule
 
 # Auto-start setup UI so no SSH command is needed after install.
 if [ -x "${SERVICE_SCRIPT}" ]; then
     "${SERVICE_SCRIPT}" start || true
 fi
 
-echo "Post-install complete. Setup UI started on port 8787. Configure SMART helper as root task in DSM UI."
+echo "Post-install complete. Setup UI started on port 8787. SMART/system-log helpers and monitor scheduler auto-schedules installed."
 exit 0

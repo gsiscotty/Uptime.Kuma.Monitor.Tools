@@ -99,6 +99,17 @@ Then open:
 
 If needed, control it from Package Center (Start/Stop) for this package.
 
+## UI Authentication (Required)
+
+The package UI now enforces local authentication:
+
+- single admin password
+- mandatory TOTP 2FA (authenticator app)
+- one-time recovery codes generated during setup
+
+First UI visit requires security bootstrap before dashboard access.
+After bootstrap, login is always password + TOTP (or a recovery code fallback).
+
 ### SMART helper
 
 During installation, a root helper script is installed:
@@ -106,10 +117,25 @@ During installation, a root helper script is installed:
 - `/var/packages/synology-monitor/target/smart-helper.sh`
 - writes cache consumed by the package UI/check logic
 
-Then in DSM UI create a root scheduled task that runs this script (for example every 5 minutes), run the task once, and then press "Check elevated access now" in the package UI.
+The package now auto-installs headless root schedules:
+- SMART helper refresh every 5 minutes
+- System-log helper refresh every 5 minutes (for System diagnostics cache)
+- Monitor scheduler tick every minute (respects configured interval in app settings)
+This keeps checks running without any logged-in user/session.
+Additionally, package service start launches a dedicated scheduler loop process as fallback if DSM cron is unavailable.
+Manual DSM Task Scheduler setup remains optional as fallback.
+After install/update, run one helper execution and then press "Check elevated access now" in the package UI to confirm status immediately.
 The setup UI includes an "elevated access" status panel to confirm whether helper cache is active.
 It also includes an "Auto-create task (beta)" button and status block (best-effort; manual UI setup remains fallback).
 The setup UI includes embedded Task Scheduler screenshots to guide users through each step.
+
+## Python dependency notes (UI auth)
+
+Ensure these modules are available to the package Python runtime:
+
+- `werkzeug` (password hashing)
+- `pyotp` (TOTP verification)
+- `qrcode` and `Pillow` (QR code generation for enrollment)
 
 ## Notes
 

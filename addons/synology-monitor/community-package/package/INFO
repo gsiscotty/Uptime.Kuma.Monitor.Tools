@@ -1,6 +1,6 @@
 thirdparty="yes"
 package="synology-monitor"
-version="1.0.0-0025"
+version="1.0.0-0026"
 arch="noarch"
 description="EasySystems GmbH Kuma Monitor Addon for Synology DSM with SMART and storage checks, guided elevated-access setup, diagnostics views, per-monitor actions, and Uptime Kuma push integration."
 displayname="EasySystems GmbH - Kuma Monitor Addon"

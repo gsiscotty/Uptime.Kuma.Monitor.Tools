@@ -5,7 +5,7 @@
       "name": "synology-monitor",
       "dname": "EasySystems GmbH - Kuma Monitor Addon",
       "displayname": "EasySystems GmbH - Kuma Monitor Addon",
-      "version": "1.0.0-0025",
+      "version": "1.0.0-0026",
       "arch": "noarch",
       "description": "EasySystems GmbH Kuma Monitor Addon for Synology DSM with SMART and storage checks, guided elevated-access setup, diagnostics views, per-monitor actions, and Uptime Kuma push integration.",
       "desc": "EasySystems GmbH Kuma Monitor Addon for Synology DSM with SMART and storage checks, guided elevated-access setup, diagnostics views, per-monitor actions, and Uptime Kuma push integration.",
@@ -20,8 +20,8 @@
       "beta": "yes",
       "os_min_ver": "7.0-40000",
       "link": "https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools/releases/latest/download/synology-monitor-basic.spk",
-      "checksum_sha256": "284d9a363a6696b5de22acd9dec126dd35fb7e2f53c42d67c77de476f145c5eb",
-      "size": 225280
+      "checksum_sha256": "3d6c5a33baa70980c18829ff19688e8213d9adcfc5c3975fa07a05d4688c989e",
+      "size": 245760
     }
   ]
 }
