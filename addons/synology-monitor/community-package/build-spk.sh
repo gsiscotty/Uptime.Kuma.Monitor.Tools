@@ -10,6 +10,7 @@ TARGET_DIR="${WORK_DIR}/package-root"
 PACKAGE_TGZ="${WORK_DIR}/package.tgz"
 SPK_PATH="${DIST_DIR}/synology-monitor-basic.spk"
 GITHUB_REPO="${GITHUB_REPO:-gsiscotty/Uptime.Kuma.Monitor.Tools}"
+RELEASE_TAG="${RELEASE_TAG:-}"
 
 rm -rf "${WORK_DIR}" "${DIST_DIR}"
 mkdir -p "${TARGET_DIR}" "${DIST_DIR}" "${REPO_DIR}"
@@ -21,7 +22,7 @@ cp "${ROOT_DIR}"/../task-*.png "${TARGET_DIR}/"
 chmod 644 "${TARGET_DIR}"/task-*.png
 
 # Build package.tgz and .spk using Python tarfile to avoid macOS AppleDouble files (._*).
-ROOT_DIR="${ROOT_DIR}" GITHUB_REPO="${GITHUB_REPO}" python3 - <<'PY'
+ROOT_DIR="${ROOT_DIR}" GITHUB_REPO="${GITHUB_REPO}" RELEASE_TAG="${RELEASE_TAG}" python3 - <<'PY'
 import tarfile
 import os
 import json
@@ -30,6 +31,7 @@ from pathlib import Path
 
 root = Path(os.environ["ROOT_DIR"])
 github_repo = os.environ["GITHUB_REPO"]
+release_tag = os.environ.get("RELEASE_TAG", "").strip()
 work = root / ".build"
 pkg_root = work / "package-root"
 pkg_tgz = work / "package.tgz"
@@ -79,7 +81,10 @@ for line in (package_dir / "INFO").read_text(encoding="utf-8").splitlines():
 
 spk_bytes = spk.read_bytes()
 sha256 = hashlib.sha256(spk_bytes).hexdigest()
-link = f"https://github.com/{github_repo}/releases/latest/download/{spk.name}"
+if release_tag:
+    link = f"https://github.com/{github_repo}/releases/download/{release_tag}/{spk.name}"
+else:
+    link = f"https://github.com/{github_repo}/releases/latest/download/{spk.name}"
 packages_json = {
     "packages": [
         {
