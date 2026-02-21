@@ -1,5 +1,5 @@
 package="synology-monitor"
-version="1.0.0-0054"
+version="1.0.0-0055"
 displayname="EasySystems GmbH - Kuma Monitor Addon"
 arch="noarch"
 description="EasySystems GmbH Kuma Monitor Addon for Synology DSM with SMART, storage, backup, ping, port, DNS checks, guided elevated-access setup, diagnostics views, per-monitor actions, multi-instance peering with mTLS security, and Uptime Kuma push integration. Proxy: Control Panel > Login Portal > Application. Add rule Source (FQDN/hostname) -> Destination http://localhost:8787 for HTTPS browser access. Do NOT use the proxy FQDN for peering (Master URL, Agent Callback URL); use internal hostname or IP:8787 so agents and master connect directly."
