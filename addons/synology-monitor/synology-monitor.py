@@ -73,7 +73,7 @@ except Exception:
             return False
 
 
-VERSION = "1.0.0-0050"
+VERSION = "1.0.0-0054"
 CONFIG_FILE_MODE = 0o600
 CRON_MARKER = "# synology-monitor.py - do not edit this line manually"
 INTERVAL_MIN = 1
@@ -814,15 +814,103 @@ def _decrypt_payload(encoded: str, token: str) -> Optional[str]:
     return bytes(plaintext_bytes).decode("utf-8", errors="ignore")
 
 
+BACKUP_SALT = b"synology-monitor-backup-v1"
+
+
+def _derive_backup_key(user_key: str) -> bytes:
+    """Derive a 32-byte AES key from user-provided backup key."""
+    return hashlib.pbkdf2_hmac("sha256", user_key.encode("utf-8"), BACKUP_SALT, 100000)
+
+
+def _encrypt_backup(plaintext: str, user_key: str) -> str:
+    """Encrypt backup payload with user key. Returns base64(iv + tag + ciphertext)."""
+    key = _derive_backup_key(user_key)
+    iv = secrets.token_bytes(12)
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # type: ignore[import-not-found]
+        aes = AESGCM(key)
+        ct = aes.encrypt(iv, plaintext.encode("utf-8"), None)
+        return base64.b64encode(iv + ct).decode("ascii")
+    except ImportError:
+        pass
+    import tempfile
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pt") as ptf:
+        ptf.write(plaintext.encode("utf-8"))
+        ptf_name = ptf.name
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".ct") as ctf:
+        ctf_name = ctf.name
+    try:
+        rc, _ = _run_cmd([
+            "openssl", "enc", "-aes-256-gcm", "-e",
+            "-K", key.hex(), "-iv", iv.hex(),
+            "-in", ptf_name, "-out", ctf_name,
+        ], timeout_sec=10)
+        if rc == 0 and Path(ctf_name).exists():
+            ct_data = Path(ctf_name).read_bytes()
+            return base64.b64encode(iv + ct_data).decode("ascii")
+    finally:
+        Path(ptf_name).unlink(missing_ok=True)
+        Path(ctf_name).unlink(missing_ok=True)
+    ct_bytes = bytearray()
+    key_stream = hashlib.sha512(key + iv).digest()
+    for i, b in enumerate(plaintext.encode("utf-8")):
+        if i % 64 == 0 and i > 0:
+            key_stream = hashlib.sha512(key + iv + i.to_bytes(4, "big")).digest()
+        ct_bytes.append(b ^ key_stream[i % 64])
+    tag = hmac.new(key, iv + bytes(ct_bytes), hashlib.sha256).digest()[:16]
+    return base64.b64encode(iv + tag + bytes(ct_bytes)).decode("ascii")
+
+
+def _decrypt_backup(encoded: str, user_key: str) -> Optional[str]:
+    """Decrypt backup payload. Returns plaintext or None on failure."""
+    key = _derive_backup_key(user_key)
+    try:
+        raw = base64.b64decode(encoded)
+    except Exception:
+        return None
+    if len(raw) < 12:
+        return None
+    iv = raw[:12]
+    rest = raw[12:]
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # type: ignore[import-not-found]
+        aes = AESGCM(key)
+        plaintext = aes.decrypt(iv, rest, None)
+        return plaintext.decode("utf-8")
+    except ImportError:
+        pass
+    except Exception:
+        return None
+    if len(rest) < 16:
+        return None
+    tag = rest[:16]
+    ct_bytes = rest[16:]
+    expected_tag = hmac.new(key, iv + ct_bytes, hashlib.sha256).digest()[:16]
+    if not hmac.compare_digest(tag, expected_tag):
+        return None
+    plaintext_bytes = bytearray()
+    key_stream = hashlib.sha512(key + iv).digest()
+    for i, b in enumerate(ct_bytes):
+        if i % 64 == 0 and i > 0:
+            key_stream = hashlib.sha512(key + iv + i.to_bytes(4, "big")).digest()
+        plaintext_bytes.append(b ^ key_stream[i % 64])
+    return bytes(plaintext_bytes).decode("utf-8", errors="ignore")
+
+
 def _agent_request_cert(cfg: Dict[str, Any]) -> str:
     """Agent requests a signed cert from master and stores cert chain locally."""
     role = str(cfg.get("peer_role", "standalone") or "standalone").lower()
     if role != "agent":
         return "Certificate request is only available for agent role."
-    master_url = str(cfg.get("peer_master_url", "") or "").strip().rstrip("/")
+    master_host, master_port = _parse_peer_host_port(
+        cfg.get("peer_master_url", ""), int(cfg.get("peer_port", PEER_DEFAULT_PORT) or PEER_DEFAULT_PORT)
+    )
     token = str(cfg.get("peering_token", "") or "").strip()
-    if not master_url or not token:
-        return "Missing master URL or peering token."
+    if not master_host or not token:
+        return "Missing master host or peering token."
+    master_url = _resolve_peer_url(master_host, master_port, token, timeout=10)
+    if not master_url:
+        return f"Cannot reach master at {master_host}:{master_port}."
     if not _openssl_available():
         return "openssl not available on this system."
     instance_id = _get_instance_id(cfg)
@@ -874,16 +962,23 @@ def _agent_request_cert(cfg: Dict[str, Any]) -> str:
 
 
 def _peer_push_to_master(cfg: Dict[str, Any]) -> str:
-    master_url = str(cfg.get("peer_master_url", "") or "").strip().rstrip("/")
+    master_host, master_port = _parse_peer_host_port(
+        cfg.get("peer_master_url", ""), int(cfg.get("peer_port", PEER_DEFAULT_PORT) or PEER_DEFAULT_PORT)
+    )
     token = str(cfg.get("peering_token", "") or "").strip()
-    if not master_url or not token:
-        return "Agent sync skipped: no master URL or peering token configured."
+    if not master_host or not token:
+        return "Agent sync skipped: no master host or peering token configured."
+    master_url = _resolve_peer_url(master_host, master_port, token, timeout=8)
+    if not master_url:
+        return f"Cannot reach master at {master_host}:{master_port}."
     instance_id = _get_instance_id(cfg)
     instance_name = str(cfg.get("instance_name", "") or "").strip() or instance_id[:8]
     history = _load_history()
     state = _load_monitor_state()
     monitors_cfg = cfg.get("monitors", [])
-    agent_callback = str(cfg.get("agent_callback_url", "") or "").strip()
+    cb_host, cb_port = _parse_peer_host_port(
+        cfg.get("agent_callback_url", ""), int(cfg.get("peer_port", PEER_DEFAULT_PORT) or PEER_DEFAULT_PORT)
+    )
     push_payload: Dict[str, Any] = {
         "instance_id": instance_id,
         "instance_name": instance_name,
@@ -893,8 +988,8 @@ def _peer_push_to_master(cfg: Dict[str, Any]) -> str:
         "state": state,
         "pushed_at": int(time.time()),
     }
-    if agent_callback:
-        push_payload["callback_url"] = agent_callback
+    if cb_host:
+        push_payload["callback_url"] = f"{cb_host}:{cb_port}"
     try:
         t0 = time.time()
         status, body = _peer_http_request(master_url, token, "POST", "/api/peer/push", push_payload, timeout=12)
@@ -914,6 +1009,57 @@ def _peer_push_to_master(cfg: Dict[str, Any]) -> str:
         cfg["last_peer_sync_latency_ms"] = None
         save_config(cfg, reapply_cron=False)
         return f"Master push error: {type(e).__name__}: {e}"
+
+
+PEER_DEFAULT_PORT = 8787
+
+
+def _parse_peer_host_port(url_or_host: str, default_port: int = PEER_DEFAULT_PORT) -> Tuple[str, int]:
+    """Extract host and port from URL (https://host:port) or plain host or host:port. Returns (host, port)."""
+    s = str(url_or_host or "").strip().rstrip("/")
+    if not s:
+        return ("", default_port)
+    parsed = urlparse(s if "://" in s else f"http://{s}")
+    host = (parsed.hostname or parsed.path or s).strip()
+    if not host:
+        return ("", default_port)
+    port = parsed.port if parsed.port is not None else default_port
+    return (host, port)
+
+
+def _peer_url_for_input_display(url: str, default_port: int = PEER_DEFAULT_PORT) -> str:
+    """Return URL for display in agent URL input - omit :8787 when that's the port so user enters host only."""
+    if not url or not str(url).strip():
+        return ""
+    host, port = _parse_peer_host_port(url, default_port)
+    if not host:
+        return ""
+    if port == default_port:
+        return host
+    return f"{host}:{port}"
+
+
+def _resolve_peer_url(host: str, port: int, token: str, timeout: int = 5) -> str:
+    """Try HTTPS first, fall back to HTTP. Returns the working base URL (e.g. https://host:port)."""
+    if not host:
+        return ""
+    for scheme in ("https", "http"):
+        base = f"{scheme}://{host}:{port}"
+        try:
+            status, _ = _peer_http_request(base, token, "GET", "/api/peer/health", timeout=timeout)
+            if status < 500:
+                return base.rstrip("/")
+        except Exception:
+            continue
+    return f"https://{host}:{port}"  # prefer https for next attempt
+
+
+def _resolve_peer_url_from_stored(url_or_host: str, token: str, timeout: int = 5) -> str:
+    """Parse stored url (host, host:port, or full URL) and resolve to working scheme. Returns base URL."""
+    host, port = _parse_peer_host_port(url_or_host)
+    if not host:
+        return ""
+    return _resolve_peer_url(host, port, token, timeout)
 
 
 def _peer_http_request(url: str, token: str, method: str = "GET",
@@ -1014,9 +1160,13 @@ def _peer_sync_from_master(cfg: Dict[str, Any]) -> str:
     for p in peers:
         pid = str(p.get("instance_id", ""))
         pname = str(p.get("instance_name", "") or pid[:8])
-        p_url = str(p.get("url", "") or "").strip().rstrip("/")
-        if not p_url:
+        p_url_raw = str(p.get("url", "") or "").strip().rstrip("/")
+        if not p_url_raw:
             lines.append(f"{pname}: skipped (no URL)")
+            continue
+        p_url = _resolve_peer_url_from_stored(p_url_raw, token, timeout=8)
+        if not p_url:
+            lines.append(f"{pname}: cannot reach {p_url_raw}")
             continue
         try:
             t0 = time.time()
@@ -1071,7 +1221,14 @@ def _trigger_peer_sync_bg(cfg: Dict[str, Any]) -> None:
     threading.Thread(target=_do_sync, daemon=True).start()
 
 
-def _fetch_agent_diag(cfg: Dict[str, Any], peer_id: str, view: str, log_filter: str = "all") -> str:
+def _fetch_agent_diag(
+    cfg: Dict[str, Any],
+    peer_id: str,
+    view: str,
+    log_filter: str = "all",
+    resolve_timeout: int = 15,
+    fetch_timeout: int = 25,
+) -> str:
     """Master fetches diagnostic text from an agent."""
     token = str(cfg.get("peering_token", "") or "").strip()
     if not token:
@@ -1085,12 +1242,15 @@ def _fetch_agent_diag(cfg: Dict[str, Any], peer_id: str, view: str, log_filter: 
     if not target:
         return f"Agent '{peer_id}' not found in peers."
     p_name = str(target.get("instance_name", "") or peer_id[:8])
-    p_url = str(target.get("url", "") or "").strip().rstrip("/")
-    if not p_url:
+    p_url_raw = str(target.get("url", "") or "").strip().rstrip("/")
+    if not p_url_raw:
         return f"No URL configured for agent '{p_name}'."
+    p_url = _resolve_peer_url_from_stored(p_url_raw, token, timeout=resolve_timeout)
+    if not p_url:
+        return f"Cannot reach agent '{p_name}' at {p_url_raw}."
     try:
         qs = f"?view={quote(view)}&log_filter={quote(log_filter)}"
-        status, body = _peer_http_request(p_url, token, "GET", f"/api/peer/diag{qs}", timeout=10)
+        status, body = _peer_http_request(p_url, token, "GET", f"/api/peer/diag{qs}", timeout=fetch_timeout)
         if status < 300:
             text = body
             try:
@@ -1103,6 +1263,82 @@ def _fetch_agent_diag(cfg: Dict[str, Any], peer_id: str, view: str, log_filter: 
         return f"Agent returned HTTP {status}: {body[:500]}"
     except Exception as e:
         return f"Failed to fetch from agent: {type(e).__name__}: {e}"
+
+
+def _diagnose_agent_diag_connection(cfg: Dict[str, Any], peer_id: str) -> str:
+    """Run step-by-step diagnostic for master->agent log fetch. Returns a detailed report."""
+    lines: List[str] = []
+    token = str(cfg.get("peering_token", "") or "").strip()
+    if not token:
+        return "Diagnostic: No peering token configured."
+    peers = cfg.get("peers", []) or []
+    target = None
+    for p in peers:
+        if str(p.get("instance_id", "")) == peer_id:
+            target = p
+            break
+    if not target:
+        return f"Diagnostic: Agent '{peer_id}' not found in peers."
+    p_name = str(target.get("instance_name", "") or peer_id[:8])
+    p_url_raw = str(target.get("url", "") or "").strip().rstrip("/")
+    lines.append(f"=== Master->Agent Diag Connection Diagnostic ===")
+    lines.append(f"Agent: {p_name} (id={peer_id})")
+    lines.append(f"Stored URL: {p_url_raw or '(empty)'}")
+    lines.append("")
+    if not p_url_raw:
+        lines.append("FAIL: No URL configured. Set the agent URL in Settings > Peering > Connected Agents.")
+        return "\n".join(lines)
+    host, port = _parse_peer_host_port(p_url_raw)
+    lines.append(f"Parsed host: {host or '(none)'}  port: {port}")
+    lines.append("")
+    # Step 1: Try HTTPS
+    lines.append("Step 1: Resolve URL (try HTTPS, then HTTP)...")
+    t0 = time.time()
+    try:
+        resolved = _resolve_peer_url_from_stored(p_url_raw, token, timeout=15)
+        elapsed = round((time.time() - t0) * 1000)
+        if resolved:
+            lines.append(f"  OK: Resolved to {resolved} ({elapsed} ms)")
+        else:
+            lines.append(f"  FAIL: Could not reach agent ({elapsed} ms). Tried HTTPS and HTTP on {host}:{port}.")
+            lines.append("  Check: firewall, network path, agent service running, correct IP/hostname.")
+            return "\n".join(lines)
+    except Exception as ex:
+        lines.append(f"  FAIL: {type(ex).__name__}: {ex}")
+        return "\n".join(lines)
+    # Step 2: Health check
+    lines.append("")
+    lines.append("Step 2: Health check (GET /api/peer/health)...")
+    t0 = time.time()
+    try:
+        status, body = _peer_http_request(resolved, token, "GET", "/api/peer/health", timeout=10)
+        elapsed = round((time.time() - t0) * 1000)
+        if status < 300:
+            lines.append(f"  OK: HTTP {status} ({elapsed} ms)")
+        else:
+            lines.append(f"  FAIL: HTTP {status} ({elapsed} ms) - {body[:200]}")
+    except Exception as ex:
+        lines.append(f"  FAIL: {type(ex).__name__}: {ex} (timeout or connection error)")
+        lines.append("  If timeout: agent may be slow, on different VLAN, or firewall blocking.")
+        return "\n".join(lines)
+    # Step 3: Diag fetch
+    lines.append("")
+    lines.append("Step 3: Fetch diag (GET /api/peer/diag?view=logs)...")
+    t0 = time.time()
+    try:
+        status, body = _peer_http_request(resolved, token, "GET", "/api/peer/diag?view=logs&log_filter=all", timeout=25)
+        elapsed = round((time.time() - t0) * 1000)
+        if status < 300:
+            lines.append(f"  OK: HTTP {status} ({elapsed} ms, body ~{len(body)} chars)")
+        else:
+            lines.append(f"  FAIL: HTTP {status} ({elapsed} ms) - {body[:200]}")
+    except Exception as ex:
+        lines.append(f"  FAIL: {type(ex).__name__}: {ex} (timeout or connection error)")
+        lines.append("  Diag payload can be large; try increasing timeout or check network latency.")
+        return "\n".join(lines)
+    lines.append("")
+    lines.append("All steps passed. Log fetch should work.")
+    return "\n".join(lines)
 
 
 def _peer_create_remote_monitor(cfg: Dict[str, Any], peer_id: str,
@@ -1119,9 +1355,12 @@ def _peer_create_remote_monitor(cfg: Dict[str, Any], peer_id: str,
             break
     if not target:
         return f"Peer {peer_id} not found."
-    p_url = str(target.get("url", "") or "").strip().rstrip("/")
-    if not p_url:
+    p_url_raw = str(target.get("url", "") or "").strip().rstrip("/")
+    if not p_url_raw:
         return f"Peer {target.get('instance_name', peer_id[:8])} has no URL configured."
+    p_url = _resolve_peer_url_from_stored(p_url_raw, token, timeout=10)
+    if not p_url:
+        return f"Cannot reach peer at {p_url_raw}."
     try:
         status, body = _peer_http_request(
             p_url, token, "POST", "/api/peer/create-monitor",
@@ -2543,6 +2782,7 @@ def _parse_backup_log_tasks(log_text: str) -> Dict[str, Dict[str, Any]]:
     _status_keywords = [
         ("finished successfully", "success"), ("erfolgreich", "success"),
         ("has been completed", "success"), ("completed successfully", "success"),
+        ("error_detect", "warning"),  # C2 Backup state - before "error" to avoid false failed
         ("has failed", "failed"), ("failed", "failed"), ("fehlgeschlagen", "failed"),
         ("no response", "failed"), ("error", "failed"),
         ("has started", "running"), ("started", "running"), ("gestartet", "running"),
@@ -2557,7 +2797,7 @@ def _parse_backup_log_tasks(log_text: str) -> Dict[str, Dict[str, Any]]:
         m = task_name_pattern.search(line_stripped)
         if not m:
             lower_check = line_stripped.lower()
-            has_result_keyword = any(kw in lower_check for kw, _ in _status_keywords if _ in ("failed", "success"))
+            has_result_keyword = any(kw in lower_check for kw, _ in _status_keywords if _ in ("failed", "success", "warning"))
             if has_result_keyword:
                 bm = bracket_pattern.search(line_stripped)
                 if bm:
@@ -2719,6 +2959,8 @@ def _collect_backup_status() -> Dict[str, Any]:
         status = "unknown"
         if api_status in ("backingup", "resuming"):
             status = "running"
+        elif state_field == "error_detect":
+            status = "warning"
         elif any(w in all_vals for w in _FAIL_WORDS):
             status = "failed"
         elif str(error_field) not in ("0", "", "none", "None") and error_field:
@@ -2776,7 +3018,7 @@ def _collect_backup_status() -> Dict[str, Any]:
             if s == "failed":
                 overall = "down"
                 break
-            elif s in ("partial", "cancelled"):
+            elif s in ("partial", "cancelled", "warning"):
                 if overall != "down":
                     overall = "warning"
             elif s == "running":
@@ -2851,7 +3093,7 @@ def _probe_backup() -> Tuple[str, List[str], float]:
             for t in tasks:
                 name = t.get("name", "?")
                 st = t.get("status", "unknown")
-                icon = {"success": "OK", "failed": "FAIL", "running": "RUN", "partial": "PARTIAL", "cancelled": "CANCEL"}.get(st, "?")
+                icon = {"success": "OK", "failed": "FAIL", "running": "RUN", "partial": "PARTIAL", "cancelled": "CANCEL", "warning": "WARN"}.get(st, "?")
                 detail_parts = []
                 state_val = t.get("state", "")
                 if state_val and state_val not in ("none", ""):
@@ -2902,7 +3144,7 @@ def _probe_backup() -> Tuple[str, List[str], float]:
                     lines.append(f"  [{icon}] {tname} | {log_line}")
                     if s == "failed":
                         failed = True
-                    elif s in ("partial", "cancelled", "unknown"):
+                    elif s in ("partial", "cancelled", "warning", "unknown"):
                         warning = True
                 status = "down" if failed else ("warning" if warning else "up")
             else:
@@ -2971,7 +3213,7 @@ def check_host(mode: str, devices: List[str], debug: bool = False) -> Tuple[str,
 
 
 def _probe_ping(host: str) -> Tuple[str, List[str], float]:
-    t0 = time.time()
+    t0 = time.perf_counter()
     target = (host or "").strip()
     if not target:
         return "down", ["Ping target host is missing."], _latency_ms(t0)
@@ -2996,7 +3238,7 @@ def _probe_ping(host: str) -> Tuple[str, List[str], float]:
 
 
 def _probe_port(host: str, port: int) -> Tuple[str, List[str], float]:
-    t0 = time.time()
+    t0 = time.perf_counter()
     target = (host or "").strip()
     if not target:
         return "down", ["Port probe host is missing."], _latency_ms(t0)
@@ -3010,7 +3252,7 @@ def _probe_port(host: str, port: int) -> Tuple[str, List[str], float]:
 
 
 def _probe_dns(name: str, dns_server: str = "") -> Tuple[str, List[str], float]:
-    t0 = time.time()
+    t0 = time.perf_counter()
     target = (name or "").strip()
     server = (dns_server or "").strip()
     if not target:
@@ -3091,8 +3333,11 @@ def check_host_with_monitor(mode: str, devices: List[str], monitor: Dict[str, An
 
 
 def push_to_kuma(url: str, status: str, message: str, ping_ms: float, debug: bool = False) -> bool:
+    """Push heartbeat to Uptime Kuma. Kuma only accepts status 'up' or 'down' (anything else becomes down).
+    We map 'warning' -> 'up' so degraded-but-not-down shows green; the message conveys the warning."""
+    kuma_status = "up" if status == "warning" else status
     base = normalize_kuma_url(url)
-    full = f"{base}?status={status}&msg={quote(message)}&ping={ping_ms}"
+    full = f"{base}?status={kuma_status}&msg={quote(message)}&ping={ping_ms}"
     if debug:
         print(f"    [push] GET {base}?status=...&msg=...&ping={ping_ms}")
     try:
@@ -3434,8 +3679,15 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
     instance_name = str(cfg.get("instance_name", "") or "")
     role = str(cfg.get("peer_role", "standalone") or "standalone").lower()
     peering_token = str(cfg.get("peering_token", "") or "")
-    master_url = str(cfg.get("peer_master_url", "") or "")
-    agent_callback = str(cfg.get("agent_callback_url", "") or "")
+    _master_host, _master_port = _parse_peer_host_port(
+        cfg.get("peer_master_url", ""), int(cfg.get("peer_port", PEER_DEFAULT_PORT) or PEER_DEFAULT_PORT)
+    )
+    _cb_host, _cb_port = _parse_peer_host_port(
+        cfg.get("agent_callback_url", ""), int(cfg.get("peer_port", PEER_DEFAULT_PORT) or PEER_DEFAULT_PORT)
+    )
+    master_host = _master_host
+    agent_callback_host = _cb_host
+    peer_port = int(cfg.get("peer_port", PEER_DEFAULT_PORT) or PEER_DEFAULT_PORT)
     peers = cfg.get("peers", [])
     if not isinstance(peers, list):
         peers = []
@@ -3483,24 +3735,27 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
             p_latency = p.get("latency_ms")
             if pstatus == "offline" and p_url and peering_token:
                 try:
-                    t0 = time.time()
-                    hst, _ = _peer_http_request(p_url.strip().rstrip("/"), peering_token, "GET", "/api/peer/health", timeout=3)
-                    if hst < 300:
-                        pstatus = "online"
-                        p_latency = round((time.time() - t0) * 1000)
-                        last_seen = now
+                    p_url_resolved = _resolve_peer_url_from_stored(p_url, peering_token, timeout=3)
+                    if p_url_resolved:
+                        t0 = time.time()
+                        hst, _ = _peer_http_request(p_url_resolved, peering_token, "GET", "/api/peer/health", timeout=3)
+                        if hst < 300:
+                            pstatus = "online"
+                            p_latency = round((time.time() - t0) * 1000)
+                            last_seen = now
                 except Exception:
                     pass
+            p_url_display = p_url if ("://" in p_url) else (f"https://{p_url}" if p_url else "")
             pclass = "ok" if pstatus == "online" else "err"
             seen_short = time.strftime("%H:%M:%S", time.localtime(last_seen)) if last_seen else "never"
             lat_txt = f"{p_latency} ms" if p_latency else "-"
             p_version = str(p.get("version", "") or "")
             pbtn = "padding:6px 12px;font-size:12px;border-radius:8px;font-weight:600;white-space:nowrap;cursor:pointer;line-height:1.2;border:1px solid #36517a;background:transparent;color:#c8dbf8;"
             open_btn = (
-                f"<a href='{html.escape(p_url)}' target='_blank' rel='noopener' "
+                f"<a href='{html.escape(p_url_display)}' target='_blank' rel='noopener' "
                 f"style='{pbtn}text-decoration:none;display:inline-block;text-align:center;'>"
                 f"Open</a>"
-            ) if p_url else ""
+            ) if p_url_display else ""
             version_badge = f"<span class='badge muted-badge' data-role='peer-version'>v{html.escape(p_version)}</span>" if p_version else ""
             synced_badge = f"<span class='badge muted-badge' data-role='peer-synced'>Synced: {html.escape(seen_short)}</span>"
             peer_rows += (
@@ -3520,7 +3775,7 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
                 f"<div style='display:flex;align-items:center;gap:6px;margin-top:8px;'>"
                 f"<form method='post' action='/peer/update-peer-url' style='margin:0;display:flex;gap:4px;flex:1;'>"
                 f"<input type='hidden' name='peer_id' value='{html.escape(pid)}'>"
-                f"<input name='peer_url' value='{html.escape(p_url)}' placeholder='https://agent:8787' style='flex:1;padding:4px 6px;font-size:11px;'>"
+                f"<input name='peer_url' value='{html.escape(_peer_url_for_input_display(p_url))}' placeholder='agent-nas or 192.168.31.10' style='flex:1;padding:4px 6px;font-size:11px;'>"
                 f"<button type='submit' style='{pbtn}'>Set URL</button>"
                 f"</form>"
                 f"<form method='post' action='/peer/sync-one' style='margin:0;'>"
@@ -3545,7 +3800,7 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
             f"<form method='post' action='/peer/sync-now' style='margin:0;'>"
             f"<button type='submit'>Sync all agents</button>"
             f"</form>"
-            f"<button onclick=\"window._openAddAgent && window._openAddAgent(this)\">Add agent</button>"
+            f"<button type=\"button\" onclick=\"window._openAddAgent && window._openAddAgent(this)\">Add agent</button>"
             f"</div>"
         )
         live_panel_html = (
@@ -3565,17 +3820,29 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
     agent_fields = ""
     if role == "agent":
         agent_fields = f"""
-          <label>Master URL</label>
-          <input name="peer_master_url" value="{html.escape(master_url)}" placeholder="https://master-nas:8787">
-          <label>Agent Callback URL <span class="muted">(so master can reach this agent)</span></label>
-          <input name="agent_callback_url" value="{html.escape(agent_callback)}" placeholder="https://this-nas:8787">
+          <div style="margin-top:16px;padding:10px 12px;border:1px solid rgba(47,128,237,.4);border-radius:8px;background:rgba(47,128,237,.08);font-size:12px;">
+            <strong>Agent setup (3 steps):</strong>
+            <ol style="margin:6px 0 0 0;padding-left:18px;">
+              <li>On the <b>master</b>, copy the peering token shown there.</li>
+              <li>Paste it below &mdash; it must match the master <i>exactly</i>.</li>
+              <li>Enter master host, your callback host, port (if not 8787), then Save.</li>
+            </ol>
+          </div>
+          <label>Master's peering token <span class="muted">(copy from master's Peering card)</span></label>
+          <input name="peering_token" value="{html.escape(peering_token)}" placeholder="Paste the master's token here" style="margin-top:6px;">
+          <label>Master host <span class="muted">(hostname or IP, no http/https/port)</span></label>
+          <input name="peer_master_url" value="{html.escape(master_host)}" placeholder="master-nas or 192.168.31.32">
+          <label>Agent callback host <span class="muted">(this NAS hostname or IP for master to reach you)</span></label>
+          <input name="agent_callback_url" value="{html.escape(agent_callback_host)}" placeholder="this-nas or 192.168.31.1">
+          <label>Port <span class="muted">(if not 8787)</span></label>
+          <input name="peer_port" type="number" value="{peer_port}" placeholder="8787" min="1" max="65535" style="max-width:120px;">
           <div class="button-row" style="margin-top:10px;">
             <button type="submit">Save peering settings</button>
           </div>
         </form>
         <div class="button-row" style="gap:8px;">
           <form method="post" action="/peer/test-connection" style="margin:0;">
-            <input type="hidden" name="peer_url" value="{html.escape(master_url)}">
+            <input type="hidden" name="peer_url" value="{html.escape(f'{master_host}:{peer_port}' if master_host else '')}">
             <input type="hidden" name="peer_token" value="{html.escape(peering_token)}">
             <button type="submit">Test connection to master</button>
           </form>
@@ -3686,7 +3953,7 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
                 f"{_req_btn}"
                 f"</div>"
             )
-        elif master_url and peering_token:
+        elif master_host and peering_token:
             _sec_actions_agent = (
                 "<div style='margin-top:8px;'>"
                 "<form method='post' action='/peer/request-cert' style='margin:0;'>"
@@ -3696,26 +3963,13 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
                 "</div>"
             )
 
-    # HTTP warning
-    _http_warn = ""
-    if role == "agent" and master_url and not master_url.startswith("https://"):
-        _http_warn = (
-            "<div style='margin-top:8px;padding:8px 10px;border:1px solid rgba(245,158,11,.4);border-radius:8px;"
-            "background:rgba(245,158,11,.08);font-size:11px;color:#f59e0b;'>"
-            "Warning: Master URL uses HTTP. Payloads are encrypted with the peering token, but for full security use HTTPS."
-            "</div>"
-        )
-    if role == "master":
-        for _hp in peers:
-            _hp_url = str(_hp.get("url", "") or "")
-            if _hp_url and not _hp_url.startswith("https://"):
-                _http_warn = (
-                    "<div style='margin-top:8px;padding:8px 10px;border:1px solid rgba(245,158,11,.4);border-radius:8px;"
-                    "background:rgba(245,158,11,.08);font-size:11px;color:#f59e0b;'>"
-                    "Warning: One or more agent URLs use HTTP. Payloads are encrypted, but HTTPS with mTLS is recommended."
-                    "</div>"
-                )
-                break
+    # Connection note (we auto-prefer HTTPS on connect)
+    _http_warn = (
+        "<div style='margin-top:8px;padding:8px 10px;border:1px solid rgba(16,185,129,.3);border-radius:8px;"
+        "background:rgba(16,185,129,.06);font-size:11px;color:#10b981;'>"
+        "Peering auto-detects HTTPS and uses it when available."
+        "</div>"
+    ) if role != "standalone" else ""
 
     security_panel = ""
     if role != "standalone":
@@ -3728,6 +3982,26 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
             f"{_http_warn}"
             f"</div>"
         )
+
+    # Token section: role-specific labels and actions
+    if role == "master":
+        token_section = f"""
+          <div style="margin-top:12px;padding:10px 12px;border:1px solid rgba(16,185,129,.3);border-radius:8px;background:rgba(16,185,129,.06);font-size:12px;">
+            <strong>Master:</strong> Copy this token and share it with each agent. Agents must paste it exactly.
+          </div>
+          <label>Peering Token <span class="muted">(agents must use this exact token)</span></label>
+          <div style="margin-top:4px;"><code style="word-break:break-all;font-size:11px;">{html.escape(token_display)}</code></div>
+          <input name="peering_token" placeholder="Or paste to replace" style="margin-top:6px;">
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+            <form method="post" action="/peer/generate-token" style="margin:0;">
+              <button type="submit">Generate new token</button>
+            </form>
+          </div>
+        """
+    elif role == "agent":
+        token_section = ""
+    else:
+        token_section = ""  # standalone: no peering token
 
     return f"""
       <div class="card">
@@ -3742,12 +4016,7 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
             <select name="peer_role">{role_opts}</select>
           </div>
           {master_peer_actions_html}
-          <label>Peering Token</label>
-          <div style="margin-top:4px;"><code style="word-break:break-all;font-size:11px;">{html.escape(token_display)}</code></div>
-          <input name="peering_token" placeholder="Paste or generate" style="margin-top:6px;">
-          <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
-            <button type="submit" formaction="/peer/generate-token" formmethod="post">Generate new token</button>
-          </div>
+          {token_section}
           {agent_fields}
         {live_panel_html}
       </div>
@@ -3758,6 +4027,8 @@ def _render_setup_html(
     message: str = "",
     error: str = "",
     action_output: str = "",
+    elevated_check_message: str = "",
+    elevated_check_output: str = "",
     log_filter: str = "all",
     edit_target: str = "",
     create_mode: bool = False,
@@ -3775,6 +4046,7 @@ def _render_setup_html(
     ui_view: str = "overview",
     highlight_channel: str = "",
     log_source: str = "local",
+    diagnose_agent: bool = False,
 ) -> str:
     cfg = load_config()
     browser_instance_name = str(cfg.get("instance_name", "") or "").strip()
@@ -3816,17 +4088,24 @@ def _render_setup_html(
     current_cron_enabled = bool(edit_monitor.get("cron_enabled", cfg.get("cron_enabled", True))) if edit_monitor else True
 
     status_html = ""
-    if message and not monitor_action_name:
+    # Elevated check result: only show in Setup & Elevated Access section, not at top
+    from_elevated_check = bool(elevated_check_message or elevated_check_output)
+    if message and not monitor_action_name and not from_elevated_check:
         status_html += f"<div class='ok'>{html.escape(message)}</div>"
-    if error and not monitor_action_name:
+    if error and not monitor_action_name and not from_elevated_check:
         status_html += f"<div class='err'>{html.escape(error)}</div>"
-    if action_output and not monitor_action_name:
+    if action_output and not monitor_action_name and not from_elevated_check:
         status_html += f"<pre>{html.escape(action_output)}</pre>"
     if ssl_warning:
         status_html = f"<div class='err'>{html.escape(ssl_warning)}</div>" + status_html
     log_source = (log_source or "local").strip()
+    agent_log_async = False
     if log_source != "local" and diag_view in ("logs", "config", "history", "cache", "system"):
-        log_text = _fetch_agent_diag(cfg, log_source, diag_view, log_filter)
+        if diagnose_agent:
+            log_text = _diagnose_agent_diag_connection(cfg, log_source)
+        else:
+            log_text = "Loading agent logs..."
+            agent_log_async = True
     else:
         log_text = _build_diag_text(cfg, history, diag_view=diag_view, log_filter=log_filter)
     automation_status = _scheduler_status_text(cfg)
@@ -3847,7 +4126,7 @@ def _render_setup_html(
     else:
         task_status_text = f"No auto-create attempt yet.\n{task_hint}"
 
-    setup_open_attr = "" if elevated_ok else " open"
+    setup_open_attr = " open" if (from_elevated_check or not elevated_ok) else ""
     setup_state_text = "Setup complete - section collapsed by default." if elevated_ok else "Setup required - complete the steps below."
     setup_state_css = "ok" if elevated_ok else "err"
 
@@ -4083,7 +4362,8 @@ def _render_setup_html(
     source_label = log_source if log_source else "local"
     source_chips_html = ""
     if peer_role == "master" and diag_label in ("logs", "config", "history", "cache", "system"):
-        src_chips = [f"<a class='chip {'active' if source_label=='local' else ''}' href='/?view=overview&diag_view={diag_label}&log_filter={filter_label}&log_source=local'>Local</a>"]
+        q_base = f"view=overview&amp;diag_view={diag_label}&amp;log_filter={filter_label}"
+        src_chips = [f"<a class='chip {'active' if source_label=='local' else ''}' href='?{q_base}&amp;log_source=local'>Local</a>"]
         for sp in (cfg.get("peers", []) or []):
             sp_id = str(sp.get("instance_id", "") or "").strip()
             if not _is_valid_peer_instance_id(sp_id):
@@ -4091,7 +4371,7 @@ def _render_setup_html(
             sp_name = str(sp.get("instance_name", "") or sp_id[:8])
             src_chips.append(
                 f"<a class='chip {'active' if source_label==sp_id else ''}' "
-                f"href='/?view=overview&diag_view={diag_label}&log_filter={filter_label}&log_source={html.escape(sp_id)}'>"
+                f"href='?{q_base}&amp;log_source={html.escape(sp_id)}'>"
                 f"{html.escape(sp_name)}</a>"
             )
         source_chips_html = (
@@ -4126,11 +4406,17 @@ def _render_setup_html(
 
     stay_popup_field = "<input type='hidden' name='stay_popup' value='1'> " if show_setup_popup else ""
     gallery_urls_json = json.dumps(gallery_urls)
+    elevated_check_html = ""
+    if elevated_check_message:
+        elevated_check_html += f"<div class='ok'>{html.escape(elevated_check_message)}</div>"
+    if elevated_check_output:
+        elevated_check_html += f"<pre>{html.escape(elevated_check_output)}</pre>"
     setup_card = f"""
     <details class="card"{setup_open_attr}>
       <summary>Setup & Elevated Access</summary>
       <div class="{setup_state_css}">{html.escape(setup_state_text)}</div>
       <div class="{elevated_css}">{html.escape(elevated_msg)}</div>
+      {elevated_check_html}
       <h4>Quick Steps</h4>
       <div class="step-grid">
         {step_cards_html}
@@ -4184,19 +4470,20 @@ def _render_setup_html(
       <div class="card">
         <h3>Logs & Diagnostics</h3>
         <div class="chip-row" style="flex-wrap:wrap;">
-          <a class="chip {'active' if diag_label=='logs' else ''}" href="/?view=overview&diag_view=logs&log_filter={filter_label}&log_source={html.escape(source_label)}">Logs</a>
-          <a class="chip {'active' if diag_label=='task' else ''}" href="/?view=overview&diag_view=task&log_source={html.escape(source_label)}">Task</a>
-          <a class="chip {'active' if diag_label=='cache' else ''}" href="/?view=overview&diag_view=cache&log_source={html.escape(source_label)}">Cache</a>
-          <a class="chip {'active' if diag_label=='config' else ''}" href="/?view=overview&diag_view=config&log_source={html.escape(source_label)}">Config</a>
-          <a class="chip {'active' if diag_label=='history' else ''}" href="/?view=overview&diag_view=history&log_source={html.escape(source_label)}">History</a>
-          <a class="chip {'active' if diag_label=='paths' else ''}" href="/?view=overview&diag_view=paths&log_source={html.escape(source_label)}">Paths</a>
-          <a class="chip {'active' if diag_label=='system' else ''}" href="/?view=overview&diag_view=system&log_source={html.escape(source_label)}">System</a>
+          <a class="chip {'active' if diag_label=='logs' else ''}" href="?view=overview&amp;diag_view=logs&amp;log_filter={html.escape(filter_label)}&amp;log_source={html.escape(source_label)}">Logs</a>
+          <a class="chip {'active' if diag_label=='task' else ''}" href="?view=overview&amp;diag_view=task&amp;log_source={html.escape(source_label)}">Task</a>
+          <a class="chip {'active' if diag_label=='cache' else ''}" href="?view=overview&amp;diag_view=cache&amp;log_source={html.escape(source_label)}">Cache</a>
+          <a class="chip {'active' if diag_label=='config' else ''}" href="?view=overview&amp;diag_view=config&amp;log_source={html.escape(source_label)}">Config</a>
+          <a class="chip {'active' if diag_label=='history' else ''}" href="?view=overview&amp;diag_view=history&amp;log_source={html.escape(source_label)}">History</a>
+          <a class="chip {'active' if diag_label=='paths' else ''}" href="?view=overview&amp;diag_view=paths&amp;log_source={html.escape(source_label)}">Paths</a>
+          <a class="chip {'active' if diag_label=='system' else ''}" href="?view=overview&amp;diag_view=system&amp;log_source={html.escape(source_label)}">System</a>
           {source_chips_html}
         </div>
-        {"<div class='chip-row'><a class='chip " + ("active" if filter_label=='all' else "") + "' href='/?view=overview&diag_view=logs&log_filter=all&log_source=" + html.escape(source_label) + "'>All</a><a class='chip " + ("active" if filter_label=='smart' else "") + "' href='/?view=overview&diag_view=logs&log_filter=smart&log_source=" + html.escape(source_label) + "'>Smart</a><a class='chip " + ("active" if filter_label=='storage' else "") + "' href='/?view=overview&diag_view=logs&log_filter=storage&log_source=" + html.escape(source_label) + "'>Storage</a><a class='chip " + ("active" if filter_label=='ping' else "") + "' href='/?view=overview&diag_view=logs&log_filter=ping&log_source=" + html.escape(source_label) + "'>Ping</a><a class='chip " + ("active" if filter_label=='port' else "") + "' href='/?view=overview&diag_view=logs&log_filter=port&log_source=" + html.escape(source_label) + "'>Port</a><a class='chip " + ("active" if filter_label=='dns' else "") + "' href='/?view=overview&diag_view=logs&log_filter=dns&log_source=" + html.escape(source_label) + "'>DNS</a><a class='chip " + ("active" if filter_label=='backup' else "") + "' href='/?view=overview&diag_view=logs&log_filter=backup&log_source=" + html.escape(source_label) + "'>Backup</a></div>" if diag_label=='logs' else ""}
-        <pre>{html.escape(log_text)}</pre>
+        {"<div class='chip-row'><a class='chip " + ("active" if filter_label=='all' else "") + "' href='?view=overview&diag_view=logs&log_filter=all&log_source=" + html.escape(source_label) + "'>All</a><a class='chip " + ("active" if filter_label=='smart' else "") + "' href='?view=overview&diag_view=logs&log_filter=smart&log_source=" + html.escape(source_label) + "'>Smart</a><a class='chip " + ("active" if filter_label=='storage' else "") + "' href='?view=overview&diag_view=logs&log_filter=storage&log_source=" + html.escape(source_label) + "'>Storage</a><a class='chip " + ("active" if filter_label=='ping' else "") + "' href='?view=overview&diag_view=logs&log_filter=ping&log_source=" + html.escape(source_label) + "'>Ping</a><a class='chip " + ("active" if filter_label=='port' else "") + "' href='?view=overview&diag_view=logs&log_filter=port&log_source=" + html.escape(source_label) + "'>Port</a><a class='chip " + ("active" if filter_label=='dns' else "") + "' href='?view=overview&diag_view=logs&log_filter=dns&log_source=" + html.escape(source_label) + "'>DNS</a><a class='chip " + ("active" if filter_label=='backup' else "") + "' href='?view=overview&diag_view=logs&log_filter=backup&log_source=" + html.escape(source_label) + "'>Backup</a></div>" if diag_label=='logs' else ""}
+        <pre id="log-diag-pre"{' data-agent-fetch="1" data-peer-id="' + html.escape(source_label) + '" data-view="' + html.escape(diag_label) + '" data-log-filter="' + html.escape(filter_label) + '"' if agent_log_async else ""}>{html.escape(log_text)}</pre>
         <div class="button-row">
           <form method="get" action="/"><input type="hidden" name="view" value="overview"><input type="hidden" name="diag_view" value="{html.escape(diag_label)}"><input type="hidden" name="log_filter" value="{html.escape(filter_label)}"><input type="hidden" name="log_source" value="{html.escape(source_label)}"><button type="submit">Refresh</button></form>
+          {("<form method='get' action='/' style='margin-left:auto;'><input type='hidden' name='view' value='overview'><input type='hidden' name='diag_view' value='" + html.escape(diag_label) + "'><input type='hidden' name='log_filter' value='" + html.escape(filter_label) + "'><input type='hidden' name='log_source' value='" + html.escape(source_label) + "'><input type='hidden' name='diagnose' value='1'><button type='submit'>Diagnose connection</button></form>") if source_label != "local" else ""}
           {"<form method='post' action='/clear-logs'><button type='submit'>Clear logs</button></form>" if diag_label == "logs" else ""}
           {"<form method='post' action='/clear-task-status'><button type='submit'>Clear task data</button></form>" if diag_label == "task" else ""}
           {"<form method='post' action='/clear-cache'><button type='submit'>Clear cache</button></form>" if diag_label == "cache" else ""}
@@ -4264,20 +4551,43 @@ def _render_setup_html(
       <div class="card">
         <h3>Danger Zone</h3>
         <div class="muted">Restart package services from UI (web UI + scheduler loop).</div>
+        <div style="margin-bottom:18px;padding:12px 0;border-bottom:1px solid var(--border);">
+          <label>Export</label>
+          <div class="muted" style="margin-top:4px;">Full encrypted backup or public-only settings.</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+            <form method="post" action="/auth/export-backup" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:0;">
+              <input name="backup_key" id="backup_key" type="password" placeholder="Encryption key (min 12 chars)" style="min-width:200px;" minlength="12" required>
+              <button type="button" onclick="var k=document.getElementById('backup_key');k.value=Array.from(crypto.getRandomValues(new Uint8Array(24))).map(b=>b.toString(16).padStart(2,'0')).join('');k.type='text';k.select();">Generate key</button>
+              <button type="submit">Export Encrypted Backup</button>
+            </form>
+          </div>
+          <div style="margin-top:10px;">
+            <a class="close-link" href="/auth/export">Export Backup</a>
+          </div>
+        </div>
         <form method="post" action="/auth/import" enctype="multipart/form-data">
-          <label>Import settings backup (JSON export)</label>
-          <textarea name="import_payload" rows="7" style="width:100%;margin-top:6px;box-sizing:border-box;border:1px solid #30405b;border-radius:8px;background:#0f1726;color:#d7e2f0;padding:8px;"></textarea>
-          <label>Or import from JSON file</label>
+          <label>Import settings backup</label>
+          <div class="muted" style="margin-top:4px;">Encrypted backups require the decryption key. Paste JSON or choose file.</div>
+          <label>Decryption key <span class="muted">(required for encrypted backups)</span></label>
+          <input name="backup_key" type="password" placeholder="Enter the key you saved during export" style="margin-top:4px;">
+          <label>Backup JSON</label>
+          <textarea name="import_payload" rows="5" style="width:100%;margin-top:6px;box-sizing:border-box;border:1px solid #30405b;border-radius:8px;background:#0f1726;color:#d7e2f0;padding:8px;" placeholder="Paste backup JSON or use file below"></textarea>
+          <label>Or import from file</label>
           <input name="import_file" type="file" accept=".json,application/json">
           <div class="button-row">
             <button type="submit">Import settings</button>
-            <a class="close-link" href="/auth/export">Export safe settings</a>
           </div>
         </form>
-        <div class="button-row">
-          <form method="post" action="/danger-restart" onsubmit="return confirm('Restart addon now? UI will disconnect briefly.');">
-            <button type="submit" style="border-color:#ef4444;color:#ef4444;">Restart addon</button>
-          </form>
+        <div class="card" style="margin-top:16px;border-color:rgba(239,68,68,.25);">
+          <h3>Factory Settings</h3>
+          <div class="button-row">
+            <form method="post" action="/danger-restart" onsubmit="return confirm('Restart addon now? UI will disconnect briefly.');">
+              <button type="submit" style="border-color:#ef4444;color:#ef4444;">Restart addon</button>
+            </form>
+            <form method="post" action="/danger-reset" onsubmit="return confirm('Reset configuration? All monitors and peering will be cleared. Auth will be kept.');">
+              <button type="submit" style="border-color:#ef4444;color:#ef4444;">Reset configuration</button>
+            </form>
+          </div>
         </div>
       </div>
     """
@@ -4383,6 +4693,9 @@ def _render_setup_html(
     .modal-toggle-row {{ display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 10px 12px; border: 1px solid #30405b; border-radius: 8px; background: rgba(15,23,38,.6); }}
     .modal-toggle-row label.toggle-label {{ display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 500; font-size: 13px; cursor: pointer; }}
     .modal-toggle-row input[type="checkbox"] {{ width: auto; margin: 0; accent-color: #2f80ed; }}
+    .required-asterisk {{ color: #ef4444; font-weight: 700; }}
+    .modal-form-error {{ background: rgba(239,68,68,.15); border: 1px solid rgba(239,68,68,.35); color: #f8b2b2; padding: 8px 10px; border-radius: 6px; margin-top: 10px; font-size: 13px; display: none; }}
+    .modal-form-error.show {{ display: block; }}
     .gallery-modal .modal {{ width: min(980px, 96vw); }}
     .gallery-stage {{ text-align: center; border: 1px solid var(--border); border-radius: 10px; background: #0f1726; padding: 10px; }}
     .gallery-stage img {{ max-width: 100%; max-height: 70vh; width: auto; height: auto; border-radius: 8px; }}
@@ -4417,7 +4730,7 @@ def _render_setup_html(
     }}
   </style>
 </head>
-<body data-ui-view="{html.escape(ui_view)}" data-diag-view="{html.escape(diag_label)}" data-log-filter="{html.escape(filter_label)}" data-log-source="{html.escape(source_label)}">
+<body data-ui-view="{html.escape(ui_view)}" data-diag-view="{html.escape(diag_label)}" data-log-filter="{html.escape(filter_label)}" data-log-source="{html.escape(source_label)}" data-form-error="{('1' if error and modal_open else '0')}">
   <div class="container">
     <div class="card">
       <div class="brand-head">
@@ -4435,13 +4748,13 @@ def _render_setup_html(
     <div class="modal-backdrop {'open' if modal_open else ''}" id="monitor-modal">
       <div class="modal">
         <h3>{html.escape(modal_title)}</h3>
-        <form method="post" action="/save" novalidate>
+        <form method="post" action="/save" novalidate id="monitor-form">
           <input type="hidden" name="edit_original_name" value="{html.escape(edit_original_name)}">
           {"<div id='target-peer-wrap'><label>Target Instance</label><select id='target_peer' name='target_peer' onchange='window._onTargetChange && window._onTargetChange()'>" + target_options + "</select><div id='agent-kuma-info' class='muted' style='margin-top:4px;display:none;border:1px solid rgba(47,128,237,.3);background:rgba(47,128,237,.08);border-radius:6px;padding:6px 10px;font-size:12px;'>Kuma Push URL will be added to this master. The master pushes status to Kuma on behalf of the agent.</div></div>" if target_options else ""}
-          <label>Monitor Name</label>
-          <input id="name" name="name" value="{html.escape(current_name)}">
-          <label>Kuma Push URL</label>
-          <input name="kuma_url" value="{html.escape(current_url)}" placeholder="https://kuma.example.com/api/push/TOKEN">
+          <label>Monitor Name <span class="required-asterisk">*</span></label>
+          <input id="name" name="name" value="{html.escape(current_name)}" required minlength="2" placeholder="e.g. smart-synology-check">
+          <label>Kuma Push URL <span class="required-asterisk">*</span></label>
+          <input name="kuma_url" value="{html.escape(current_url)}" required placeholder="https://kuma.example.com/api/push/TOKEN">
           <div class="row">
             <div>
               <label>Check Mode</label>
@@ -4460,15 +4773,15 @@ def _render_setup_html(
             </div>
           </div>
           <div id="probe-host-wrap">
-            <label>Probe Host (for ping/port)</label>
+            <label>Probe Host (for ping/port) <span class="required-asterisk">*</span></label>
             <input name="probe_host" value="{html.escape(current_probe_host)}" placeholder="example.com or 192.168.1.10">
           </div>
           <div id="probe-port-wrap">
-            <label>Probe Port (for port mode)</label>
+            <label>Probe Port (for port mode) <span class="required-asterisk">*</span></label>
             <input name="probe_port" type="number" min="1" max="65535" value="{html.escape(current_probe_port)}" placeholder="443">
           </div>
           <div id="dns-name-wrap">
-            <label>DNS Name (for dns mode)</label>
+            <label>DNS Name (for dns mode) <span class="required-asterisk">*</span></label>
             <input name="dns_name" value="{html.escape(current_dns_name)}" placeholder="example.com">
           </div>
           <div id="dns-server-wrap">
@@ -4478,6 +4791,7 @@ def _render_setup_html(
           <div class="modal-toggle-row">
             <label class="toggle-label"><input type="checkbox" name="cron_enabled" value="1" {checked_cron}> <span>Enable automatic checks</span></label>
           </div>
+          <div id="monitor-form-error" class="modal-form-error" role="alert"></div>
           <div class="button-row">
             <button type="submit">{'Update monitor' if edit_original_name else 'Create monitor'}</button>
             <button type="button" class="close-link" onclick="document.getElementById('monitor-modal').classList.remove('open')">Cancel</button>
@@ -4494,8 +4808,8 @@ def _render_setup_html(
           <input name="agent_name" placeholder="e.g. Branch-NAS" required>
           <label>Agent Instance ID <span class="muted">(from the agent's peering card)</span></label>
           <input name="agent_id" placeholder="e.g. a1b2c3d4-..." required>
-          <label>Agent URL <span class="muted">(optional, for master-initiated sync)</span></label>
-          <input name="agent_url" placeholder="https://agent-nas:8787">
+          <label>Agent host <span class="muted">(optional, hostname or IP; port 8787 if omitted)</span></label>
+          <input name="agent_url" placeholder="agent-nas or 192.168.31.10">
           <div class="button-row">
             <button type="submit">Add agent</button>
             <button type="button" class="close-link" onclick="document.getElementById('add-agent-modal').classList.remove('open')">Cancel</button>
@@ -4549,6 +4863,21 @@ def _render_setup_html(
         }} catch (e) {{
           /* ignore session storage errors */
         }}
+        // Async fetch agent logs (avoids blocking page load when agent is unreachable)
+        var logPre = document.getElementById("log-diag-pre");
+        if (logPre && logPre.getAttribute("data-agent-fetch") === "1") {{
+          var peerId = logPre.getAttribute("data-peer-id") || "";
+          var view = logPre.getAttribute("data-view") || "logs";
+          var lf = logPre.getAttribute("data-log-filter") || "all";
+          if (peerId) {{
+            var url = "/api/agent-diag?peer_id=" + encodeURIComponent(peerId) + "&view=" + encodeURIComponent(view) + "&log_filter=" + encodeURIComponent(lf);
+            fetch(url, {{ credentials: "same-origin" }}).then(function(r) {{ return r.json(); }}).then(function(data) {{
+              if (data && data.text !== undefined) logPre.textContent = data.text;
+            }}).catch(function(err) {{
+              logPre.textContent = "Failed to load agent logs: " + (err && err.message ? err.message : String(err));
+            }});
+          }}
+        }}
         function ensureUiViewField(form) {{
           if (!form || !form.querySelector) return;
           if (!form.querySelector("input[name='ui_view']")) {{
@@ -4561,18 +4890,56 @@ def _render_setup_html(
         }}
         var postForms = document.querySelectorAll("form[method='post'], form[method='POST']");
         postForms.forEach(function(form) {{ ensureUiViewField(form); }});
-        // Capture submit globally so dynamically re-rendered forms (peer live panel) are covered too.
+        // Ensure source chips (Local, agent names) navigate reliably when clicked (handles subpath + edge cases)
+        document.addEventListener("click", function(ev) {{
+          var a = ev.target && ev.target.closest ? ev.target.closest("a.chip[href*='log_source']") : null;
+          if (a && a.getAttribute("href")) {{
+            ev.preventDefault();
+            window.location.href = a.getAttribute("href");
+          }}
+        }}, true);
+        // Intercept POST forms: fetch and update page without reload (except auth, danger, exports)
+        document.addEventListener("submit", async function(ev) {{
+          var form = ev && ev.target ? ev.target : null;
+          if (!form || !form.getAttribute) return;
+          if ((form.getAttribute("method") || "get").toLowerCase() !== "post") return;
+          if (form.id === "monitor-form") return;
+          var act = (form.getAttribute("action") || "") + "";
+          var skip = /\\/(auth\\/(logout|login|setup|verify-2fa|recovery|import|export))|\\/danger-(restart|reset)/.test(act) || (form.enctype || "").toLowerCase().indexOf("multipart") >= 0;
+          if (skip) return;
+          ev.preventDefault();
+          ev.stopImmediatePropagation();
+          ensureUiViewField(form);
+          var submitBtn = form.querySelector("button[type='submit']");
+          if (submitBtn) {{ submitBtn.disabled = true; submitBtn.textContent = (submitBtn.textContent || "").replace(/…$/, "") + "…"; }}
+          try {{
+            var fd = new FormData(form);
+            var params = new URLSearchParams();
+            fd.forEach(function(v, k) {{ params.append(k, v); }});
+            var r = await fetch(act, {{
+              method: "POST",
+              headers: {{ "Content-Type": "application/x-www-form-urlencoded" }},
+              body: params.toString()
+            }});
+            var txt = await r.text();
+            if (r.redirected && (r.url || "").indexOf("auth") >= 0) {{ location.href = r.url; return; }}
+            _updatePageFromResponse(txt);
+            var addAgentModal = document.getElementById("add-agent-modal");
+            if (addAgentModal) addAgentModal.classList.remove("open");
+          }} catch (e) {{
+            location.reload();
+          }} finally {{
+            if (submitBtn) {{ submitBtn.disabled = false; submitBtn.textContent = (submitBtn.textContent || "").replace("…", ""); }}
+          }}
+        }}, true);
         document.addEventListener("submit", function(ev) {{
           var form = ev && ev.target ? ev.target : null;
           if (!form || !form.getAttribute) return;
-          var method = (form.getAttribute("method") || "get").toLowerCase();
-          if (method !== "post") return;
+          if ((form.getAttribute("method") || "get").toLowerCase() !== "post") return;
           ensureUiViewField(form);
           try {{
             sessionStorage.setItem("synmon_scroll_y", String(Math.max(0, Math.round(window.scrollY || 0))));
-          }} catch (e) {{
-            /* ignore session storage errors */
-          }}
+          }} catch (e) {{}}
         }}, true);
         var modeEl = document.getElementById("check_mode");
         var nameEl = document.getElementById("name");
@@ -4747,6 +5114,29 @@ def _render_setup_html(
       window.monitorAction = monitorAction;
       window.openModal = openModal;
 
+      function _updatePageFromResponse(txt) {{
+        var doc = new DOMParser().parseFromString(txt, "text/html");
+        var newContainer = doc.querySelector(".container");
+        var newBody = doc.querySelector("body");
+        var curContainer = document.querySelector(".container");
+        if (newContainer && curContainer) {{
+          curContainer.innerHTML = newContainer.innerHTML;
+          if (newBody) {{
+            ["data-ui-view", "data-diag-view", "data-log-filter", "data-log-source", "data-form-error"].forEach(function(attr) {{
+              var v = newBody.getAttribute(attr);
+              if (v !== null) document.body.setAttribute(attr, v);
+            }});
+          }}
+          try {{
+            var path = window.location.pathname || "/";
+            var view = (newBody && newBody.getAttribute("data-ui-view")) || new URLSearchParams(window.location.search).get("view") || "overview";
+            history.replaceState({{}}, "", path + "?view=" + view);
+          }} catch (e) {{}}
+          _hookModalSave();
+          if (typeof refreshLive === "function") refreshLive();
+        }}
+      }}
+
       function _injectModal(html) {{
         var doc = new DOMParser().parseFromString(html, "text/html");
         var modal = doc.querySelector(".modal-backdrop.open");
@@ -4803,33 +5193,58 @@ def _render_setup_html(
         }}
         var form = modal.querySelector("form");
         if (!form) return;
-        form.addEventListener("submit", async function (e) {{
-          e.preventDefault();
-          var submitBtn = form.querySelector("button[type='submit']");
-          if (submitBtn) {{ submitBtn.disabled = true; submitBtn.textContent += "…"; }}
+        var errEl = form.querySelector("#monitor-form-error");
+        function showFormError(msg) {{
+          if (errEl) {{ errEl.textContent = msg || ""; errEl.classList.toggle("show", !!msg); }}
+        }}
+        form.addEventListener("submit", function (e) {{
+          showFormError("");
+          var name = (form.querySelector("#name") || {{}}).value.trim();
+          var kumaUrl = (form.querySelector("input[name='kuma_url']") || {{}}).value.trim();
+          var mode = (form.querySelector("#check_mode") || {{}}).value || "smart";
+          var probeHost = (form.querySelector("input[name='probe_host']") || {{}}).value.trim();
+          var probePort = parseInt((form.querySelector("input[name='probe_port']") || {{}}).value, 10) || 0;
+          var dnsName = (form.querySelector("input[name='dns_name']") || {{}}).value.trim();
+          if (!name || name.length < 2) {{
+            e.preventDefault();
+            showFormError("Monitor name is required (min 2 characters).");
+            return;
+          }}
+          if (!kumaUrl) {{
+            e.preventDefault();
+            showFormError("Kuma Push URL is required.");
+            return;
+          }}
+          var urlCheck = kumaUrl;
+          if (!urlCheck.match(/^https?:\\/\\//i)) urlCheck = "https://" + urlCheck;
           try {{
-            var actionUrl = form.getAttribute("action") || "/save";
-            var fd = new FormData(form);
-            var params = new URLSearchParams();
-            fd.forEach(function(v, k) {{ params.append(k, v); }});
-            var r = await fetch(actionUrl, {{
-              method: "POST",
-              headers: {{ "Content-Type": "application/x-www-form-urlencoded" }},
-              body: params.toString()
-            }});
-            var txt = await r.text();
-            var hasError = txt.indexOf('class="err"') > -1 || txt.indexOf("class='err'") > -1;
-            if (hasError && !r.ok) {{
-              _injectModal(txt);
+            var pu = new URL(urlCheck);
+            if (!pu.hostname) {{ e.preventDefault(); showFormError("Kuma Push URL must include a hostname."); return; }}
+            if (!/^\\/api\\/push\\/[A-Za-z0-9_-]+$/.test(pu.pathname)) {{
+              e.preventDefault();
+              showFormError("Kuma Push URL path must be /api/push/TOKEN (e.g. https://kuma.example.com/api/push/abc123).");
               return;
             }}
-            var m = document.getElementById("monitor-modal");
-            if (m) m.classList.remove("open");
-            var sp = new URLSearchParams(window.location.search);
-            location.href = "/?view=" + (sp.get("view") || "setup");
-          }} catch (ex) {{
-            if (submitBtn) {{ submitBtn.disabled = false; submitBtn.textContent = submitBtn.textContent.replace("…", ""); }}
+          }} catch (uerr) {{
+            e.preventDefault();
+            showFormError("Kuma Push URL is invalid.");
+            return;
           }}
+          if (mode === "ping" && !probeHost) {{
+            e.preventDefault();
+            showFormError("Ping mode requires a probe host.");
+            return;
+          }}
+          if (mode === "port") {{
+            if (!probeHost) {{ e.preventDefault(); showFormError("Port mode requires a probe host."); return; }}
+            if (probePort < 1 || probePort > 65535) {{ e.preventDefault(); showFormError("Port mode requires a valid TCP port (1-65535)."); return; }}
+          }}
+          if (mode === "dns" && !dnsName) {{
+            e.preventDefault();
+            showFormError("DNS mode requires a DNS name/domain.");
+            return;
+          }}
+          ensureUiViewField(form);
         }});
       }}
       _hookModalSave();
@@ -4964,11 +5379,19 @@ def _render_setup_html(
           if (fb) {{ fb.textContent = offlineCount + " offline"; fb.style.display = offlineCount ? "" : "none"; }}
           if (rc) rc.textContent = "Remote monitors: " + remoteMon;
           if (data.peers.length) {{
+            var defPort = 8787;
+            function peerUrlForInput(u) {{
+              if (!u) return "";
+              var m = u.match(/^(.+):(\d+)$/);
+              if (m && parseInt(m[2], 10) === defPort) return m[1];
+              return u;
+            }}
             var ph = data.peers.map(function (p) {{
               var cls = p.status === "online" ? "ok" : "err";
               var latTxt = p.latency_ms ? p.latency_ms + " ms" : "-";
               var seenTxt = tsText(p.last_seen || 0);
               var pUrl = p.url || "";
+              var pUrlDisplay = peerUrlForInput(pUrl);
               var pid = escapeHtml(p.instance_id || "");
               var pbs = "padding:6px 12px;font-size:12px;border-radius:8px;font-weight:600;white-space:nowrap;cursor:pointer;line-height:1.2;border:1px solid #36517a;background:transparent;color:#c8dbf8;";
               var openBtn = pUrl
@@ -4997,7 +5420,7 @@ def _render_setup_html(
                 + "<div style='display:flex;align-items:center;gap:6px;margin-top:8px;'>"
                 + "<form method='post' action='/peer/update-peer-url' style='margin:0;display:flex;gap:4px;flex:1;'>"
                 + "<input type='hidden' name='peer_id' value='" + pid + "'>"
-                + "<input name='peer_url' value='" + escapeHtml(pUrl) + "' placeholder='https://agent:8787' style='flex:1;padding:4px 6px;font-size:11px;'>"
+                + "<input name='peer_url' value='" + escapeHtml(pUrlDisplay) + "' placeholder='agent-nas or 192.168.31.10' style='flex:1;padding:4px 6px;font-size:11px;'>"
                 + "<button type='submit' style='" + pbs + "'>Set URL</button>"
                 + "</form>"
                 + "<form method='post' action='/peer/sync-one' style='margin:0;'>"
@@ -5126,13 +5549,39 @@ def _render_auth_setup_page(
         provision_html = f"""
         <div class="ok">Account created. Scan the QR code in your authenticator app, then store recovery codes securely.</div>
         {qr_html}
-        <div style="margin-top:10px;"><b>TOTP Secret</b><br><code>{html.escape(str(provision.get("totp_secret", "")))}</code></div>
+        <div style="margin-top:10px;"><b>TOTP Secret</b><br><code id="totp-secret">{html.escape(str(provision.get("totp_secret", "")))}</code></div>
         <div class="muted">If QR is unavailable, add this secret manually in your authenticator app.</div>
+        <div class="button-row">
+          <button type="button" class="btn secondary" onclick="copyTotpSecret(this)">Copy TOTP Secret</button>
+        </div>
         <div style="margin-top:10px;"><b>Recovery Codes (shown once)</b></div>
-        <pre>{html.escape(recovery_codes_text)}</pre>
+        <pre id="recovery-codes">{html.escape(recovery_codes_text)}</pre>
+        <div class="button-row">
+          <button type="button" class="btn secondary" onclick="copyRecoveryCodes(this)">Copy Recovery Codes</button>
+        </div>
         <div class="button-row">
           <a class="btn" href="/auth/login">Continue to Login</a>
         </div>
+        <script>
+        function copyTotpSecret(btn) {{
+          var el = document.getElementById('totp-secret');
+          if (!el) return;
+          navigator.clipboard.writeText(el.textContent).then(function() {{
+            var t = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(function() {{ btn.textContent = t; }}, 1500);
+          }}).catch(function() {{ alert('Failed to copy'); }});
+        }}
+        function copyRecoveryCodes(btn) {{
+          var el = document.getElementById('recovery-codes');
+          if (!el) return;
+          navigator.clipboard.writeText(el.textContent.trim()).then(function() {{
+            var t = btn.textContent;
+            btn.textContent = 'Copied!';
+            setTimeout(function() {{ btn.textContent = t; }}, 1500);
+          }}).catch(function() {{ alert('Failed to copy'); }});
+        }}
+        </script>
         """
     body = (
         provision_html
@@ -5411,7 +5860,9 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
             """If TLS is active but this request arrived over plain HTTP, redirect to HTTPS.
             Returns True if redirect was sent (caller should return), False otherwise.
             Peer API paths are exempt -- they use application-layer security.
-            Requests arriving through a reverse proxy are exempt -- the proxy handles TLS."""
+            Requests arriving through a reverse proxy are exempt -- the proxy handles TLS.
+            Raw IP access is exempt -- redirecting http://IP:port to https://IP:port can cause
+            ERR_SSL_PROTOCOL_ERROR when TLS later becomes unavailable (certs removed, reinstall)."""
             if not self._tls_available:
                 return False
             if isinstance(self.connection, ssl.SSLSocket):
@@ -5427,6 +5878,13 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
             host = self.headers.get("Host", "")
             if not host:
                 host = f"localhost:{self.server.server_address[1]}"
+            hostname = (host.split("]:")[0].lstrip("[") if "]" in host else host).split(":")[0]
+            if not hostname:
+                return False
+            if (hostname in ("localhost", "127.0.0.1") or
+                    re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", hostname) or
+                    ":" in hostname):
+                return False
             location = f"https://{host}{self.path}"
             self.send_response(301)
             self.send_header("Location", location)
@@ -5639,6 +6097,25 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
             if self._redirect_http_to_https():
                 return
             parsed = urlparse(self.path)
+            if parsed.path == "/connection-info":
+                port = self.server.server_address[1]
+                host = self.headers.get("Host", "").split(":")[0] or "localhost"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                info = {
+                    "tls_available": bool(Handler._tls_available),
+                    "port": port,
+                    "over_tls": isinstance(self.connection, ssl.SSLSocket),
+                    "suggestion": (
+                        "Use https:// when TLS is available."
+                        if Handler._tls_available
+                        else "Server is HTTP-only. Use http:// explicitly. If your browser forces HTTPS (HSTS), try another browser or clear site data."
+                    ),
+                }
+                self.end_headers()
+                self.wfile.write(json.dumps(info).encode("utf-8"))
+                return
             if parsed.path == "/api/peer/health":
                 if not self._require_peer_mtls():
                     return
@@ -5697,7 +6174,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 self._reply_peer_json(safe_cfg, 200)
                 return
             if parsed.path == "/api/peer/diag":
-                if not self._require_peer_mtls():
+                if not self._require_peer_mtls(allow_token_only=True):
                     return
                 if not self._verify_peer_token():
                     self._reply_json({"error": "unauthorized"}, 401)
@@ -5818,6 +6295,25 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
             if parsed.path == "/status-json":
                 self._reply_json(_build_live_snapshot(), 200)
                 return
+            if parsed.path == "/api/agent-diag":
+                qs = parse_qs(parsed.query)
+                peer_id = (qs.get("peer_id", [""])[0] or "").strip()
+                view = (qs.get("view", ["logs"])[0] or "logs").strip().lower()
+                log_filter = (qs.get("log_filter", ["all"])[0] or "all").strip().lower()
+                if not peer_id:
+                    self._reply_json({"error": "Missing peer_id"}, 400)
+                    return
+                cfg = load_config()
+                text = _fetch_agent_diag(
+                    cfg,
+                    peer_id,
+                    view,
+                    log_filter,
+                    resolve_timeout=5,
+                    fetch_timeout=10,
+                )
+                self._reply_json({"text": text}, 200)
+                return
             if parsed.path == "/guide-image":
                 name = (parse_qs(parsed.query).get("name", [""])[0] or "").strip()
                 p = get_task_guide_images().get(name)
@@ -5835,6 +6331,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
             ui_view = (qs.get("view", ["overview"])[0] or "overview").strip().lower()
             highlight = (qs.get("highlight", [""])[0] or "").strip().lower()
             log_source = (qs.get("log_source", ["local"])[0] or "local").strip()
+            diagnose = (qs.get("diagnose", ["0"])[0] or "0").strip().lower() in ("1", "true", "yes")
             if highlight not in ("smart", "storage", "ping", "port", "dns", "backup"):
                 highlight = ""
             self._reply_html(
@@ -5844,6 +6341,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     ui_view=ui_view,
                     highlight_channel=highlight,
                     log_source=log_source,
+                    diagnose_agent=diagnose,
                     ssl_warning=ssl_warning,
                 )
             )
@@ -6041,9 +6539,10 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 raw_len = int(self.headers.get("Content-Length", "0"))
                 body = self.rfile.read(raw_len).decode("utf-8", errors="ignore")
                 form = parse_qs(body, keep_blank_values=True)
-                test_url = (form.get("peer_url", [""])[0] or "").strip()
+                test_url_raw = (form.get("peer_url", [""])[0] or "").strip()
                 test_token = (form.get("peer_token", [""])[0] or "").strip()
-                result = _peer_test_connection(test_url, test_token)
+                test_url = _resolve_peer_url_from_stored(test_url_raw, test_token, timeout=8) if test_url_raw and test_token else test_url_raw
+                result = _peer_test_connection(test_url, test_token) if test_url else "Missing host or token."
                 ssl_warning = self._ssl_warning_text()
                 ui_view = self._view_from_referer()
                 self._reply_html(_render_setup_html(
@@ -6060,27 +6559,41 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 body = self.rfile.read(raw_len).decode("utf-8", errors="ignore")
                 form = parse_qs(body, keep_blank_values=True)
                 cfg = load_config()
+                prev_role = str(cfg.get("peer_role", "standalone") or "standalone").lower()
                 role = (form.get("peer_role", ["standalone"])[0] or "standalone").strip().lower()
                 if role not in PEER_ROLES:
                     role = "standalone"
                 cfg["peer_role"] = role
-                cfg["peer_master_url"] = (form.get("peer_master_url", [""])[0] or "").strip()
-                cfg["agent_callback_url"] = (form.get("agent_callback_url", [""])[0] or "").strip()
+                _m_raw = (form.get("peer_master_url", [""])[0] or "").strip()
+                _cb_raw = (form.get("agent_callback_url", [""])[0] or "").strip()
+                _port_val = (form.get("peer_port", [""])[0] or "").strip()
+                _port = int(_port_val) if _port_val and _port_val.isdigit() else PEER_DEFAULT_PORT
+                cfg["peer_master_url"] = _parse_peer_host_port(_m_raw, _port)[0]
+                cfg["agent_callback_url"] = _parse_peer_host_port(_cb_raw, _port)[0]
+                cfg["peer_port"] = _port if 1 <= _port <= 65535 else PEER_DEFAULT_PORT
                 token_val = (form.get("peering_token", [""])[0] or "").strip()
+                token_auto_generated = False
                 if token_val:
                     cfg["peering_token"] = token_val
+                elif role == "master":
+                    # Auto-generate token when switching to master so it's ready to share
+                    existing = str(cfg.get("peering_token", "") or "").strip()
+                    switching_to_master = prev_role != "master"
+                    if switching_to_master or not existing:
+                        cfg["peering_token"] = secrets.token_hex(32)
+                        token_auto_generated = True
                 inst_id = _get_instance_id(cfg)
                 save_config(cfg, reapply_cron=False)
-                _extra_msg = ""
+                _extra_msg = " Peering token auto-generated." if token_auto_generated else ""
                 if role == "master" and _openssl_available():
                     ca_path = get_certs_dir() / "ca.crt"
                     if not ca_path.exists():
                         ok_ca, msg_ca = _generate_ca(force=False)
                         if ok_ca:
                             ok_sc, msg_sc = _generate_instance_cert(inst_id, cn_prefix="master")
-                            _extra_msg = f" CA auto-generated. {msg_sc}"
+                            _extra_msg += f" CA auto-generated. {msg_sc}"
                         else:
-                            _extra_msg = f" CA generation failed: {msg_ca}"
+                            _extra_msg += f" CA generation failed: {msg_ca}"
                 elif role == "agent" and cfg.get("peer_master_url") and cfg.get("peering_token"):
                     sec_st = _get_mtls_security_status(cfg)
                     if not sec_st["instance_cert_ok"] and _openssl_available():
@@ -6178,36 +6691,40 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     result = "Peer not found or no token."
                 else:
                     pname = str(target_p.get("instance_name", "") or sync_pid[:8])
-                    p_url = str(target_p.get("url", "") or "").strip().rstrip("/")
-                    if not p_url:
+                    p_url_raw = str(target_p.get("url", "") or "").strip().rstrip("/")
+                    if not p_url_raw:
                         result = f"{pname}: no URL configured."
                     else:
-                        try:
-                            t0 = time.time()
-                            status, resp_body = _peer_http_request(p_url, token, "GET", "/api/peer/snapshot", timeout=10)
-                            latency_ms = round((time.time() - t0) * 1000)
-                            if status < 300:
-                                target_p["last_seen"] = int(time.time())
-                                target_p["status"] = "online"
-                                target_p["latency_ms"] = latency_ms
-                                try:
-                                    snap = json.loads(resp_body)
-                                    target_p["monitor_count"] = len(snap.get("monitors", []))
-                                    target_p["instance_name"] = str(snap.get("instance_name", "") or pname)
-                                    target_p["version"] = str(snap.get("version", "") or "")
-                                    snap["received_at"] = int(time.time())
-                                    _save_peer_snapshot(sync_pid, snap)
-                                except (json.JSONDecodeError, ValueError):
-                                    pass
-                                result = f"{pname}: online ({latency_ms} ms)"
-                            else:
+                        p_url = _resolve_peer_url_from_stored(p_url_raw, token, timeout=10)
+                        if not p_url:
+                            result = f"{pname}: cannot reach {p_url_raw}."
+                        else:
+                            try:
+                                t0 = time.time()
+                                status, resp_body = _peer_http_request(p_url, token, "GET", "/api/peer/snapshot", timeout=10)
+                                latency_ms = round((time.time() - t0) * 1000)
+                                if status < 300:
+                                    target_p["last_seen"] = int(time.time())
+                                    target_p["status"] = "online"
+                                    target_p["latency_ms"] = latency_ms
+                                    try:
+                                        snap = json.loads(resp_body)
+                                        target_p["monitor_count"] = len(snap.get("monitors", []))
+                                        target_p["instance_name"] = str(snap.get("instance_name", "") or pname)
+                                        target_p["version"] = str(snap.get("version", "") or "")
+                                        snap["received_at"] = int(time.time())
+                                        _save_peer_snapshot(sync_pid, snap)
+                                    except (json.JSONDecodeError, ValueError):
+                                        pass
+                                    result = f"{pname}: online ({latency_ms} ms)"
+                                else:
+                                    target_p["status"] = "offline"
+                                    target_p["latency_ms"] = None
+                                    result = f"{pname}: HTTP {status}"
+                            except Exception as e:
                                 target_p["status"] = "offline"
                                 target_p["latency_ms"] = None
-                                result = f"{pname}: HTTP {status}"
-                        except Exception as e:
-                            target_p["status"] = "offline"
-                            target_p["latency_ms"] = None
-                            result = f"{pname}: {type(e).__name__}: {e}"
+                                result = f"{pname}: {type(e).__name__}: {e}"
                     cfg["peers"] = peers
                     cfg["last_peer_sync"] = int(time.time())
                     save_config(cfg, reapply_cron=False)
@@ -6261,7 +6778,8 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 body = self.rfile.read(raw_len).decode("utf-8", errors="ignore")
                 form = parse_qs(body, keep_blank_values=True)
                 upd_id = (form.get("peer_id", [""])[0] or "").strip()
-                upd_url = (form.get("peer_url", [""])[0] or "").strip()
+                upd_url_raw = (form.get("peer_url", [""])[0] or "").strip()
+                upd_url = f"{_parse_peer_host_port(upd_url_raw)[0]}:{_parse_peer_host_port(upd_url_raw)[1]}" if upd_url_raw else ""
                 cfg = load_config()
                 peers = cfg.get("peers", [])
                 if not isinstance(peers, list):
@@ -6315,7 +6833,8 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     "role": "agent",
                 }
                 if a_url:
-                    new_peer["url"] = a_url
+                    _ah, _ap = _parse_peer_host_port(a_url)
+                    new_peer["url"] = f"{_ah}:{_ap}" if _ah else a_url
                     new_peer["url_locked"] = True
                 peers.append(new_peer)
                 cfg["peers"] = peers
@@ -6406,6 +6925,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 "/auth/rotate-totp",
                 "/auth/change-password",
                 "/auth/import",
+                "/auth/export-backup",
             )
             auth = _load_auth_state()
             ssl_warning = self._ssl_warning_text()
@@ -6423,7 +6943,10 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     raw_payload = fs.getvalue("import_payload")
                     if isinstance(raw_payload, bytes):
                         raw_payload = raw_payload.decode("utf-8", errors="ignore")
-                    form = {"import_payload": [str(raw_payload or "")]}
+                    bk = fs.getvalue("backup_key")
+                    if isinstance(bk, bytes):
+                        bk = bk.decode("utf-8", errors="ignore")
+                    form = {"import_payload": [str(raw_payload or "")], "backup_key": [str(bk or "")]}
                     if "import_file" in fs:
                         up = fs["import_file"]
                         if getattr(up, "file", None):
@@ -6624,6 +7147,45 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     append_ui_log("auth-security | password updated")
                     self._reply_html(_render_setup_html(security_message="Password updated successfully.", ui_view=ui_view, ssl_warning=ssl_warning))
                     return
+                if self.path == "/auth/export-backup":
+                    if not self._is_authenticated():
+                        self._redirect("/auth/login")
+                        return
+                    backup_key = (form.get("backup_key", [""])[0] or "").strip()
+                    if len(backup_key) < 12:
+                        self._reply_html(_render_setup_html(
+                            error="Encryption key must be at least 12 characters. Save this key securely; you need it to restore.",
+                            ui_view=ui_view,
+                            ssl_warning=ssl_warning,
+                        ))
+                        return
+                    cfg = load_config()
+                    auth_state = _load_auth_state()
+                    payload = {
+                        "config": cfg,
+                        "auth": auth_state,
+                        "exported_at": int(time.time()),
+                        "v": 1,
+                    }
+                    plaintext = json.dumps(payload)
+                    try:
+                        enc = _encrypt_backup(plaintext, backup_key)
+                    except Exception as e:
+                        self._reply_html(_render_setup_html(
+                            error=f"Encryption failed: {type(e).__name__}: {e}",
+                            ui_view=ui_view,
+                            ssl_warning=ssl_warning,
+                        ))
+                        return
+                    result = json.dumps({"v": 1, "enc": enc, "exported_at": payload["exported_at"]})
+                    append_ui_log("auth-security | full encrypted backup exported")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Disposition", 'attachment; filename="synology-monitor-backup.enc.json"')
+                    self.send_header("Content-Length", str(len(result.encode("utf-8"))))
+                    self.end_headers()
+                    self.wfile.write(result.encode("utf-8"))
+                    return
                 if self.path == "/auth/import":
                     if not self._is_authenticated():
                         self._redirect("/auth/login")
@@ -6635,13 +7197,37 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                         self._reply_html(_render_setup_html(error="Import payload is empty. Paste JSON or choose a JSON file.", ui_view=ui_view, ssl_warning=ssl_warning))
                         return
                     try:
-                        payload = json.loads(raw)
+                        parsed = json.loads(raw)
                     except json.JSONDecodeError:
                         self._reply_html(_render_setup_html(error="Import payload is not valid JSON.", ui_view=ui_view, ssl_warning=ssl_warning))
                         return
-                    if not isinstance(payload, dict):
+                    if not isinstance(parsed, dict):
                         self._reply_html(_render_setup_html(error="Import payload must be a JSON object.", ui_view=ui_view, ssl_warning=ssl_warning))
                         return
+                    if parsed.get("enc") and parsed.get("v"):
+                        backup_key = (form.get("backup_key", [""])[0] or "").strip()
+                        if not backup_key:
+                            self._reply_html(_render_setup_html(
+                                error="Encrypted backup requires the decryption key.",
+                                ui_view=ui_view,
+                                ssl_warning=ssl_warning,
+                            ))
+                            return
+                        dec = _decrypt_backup(str(parsed.get("enc", "")), backup_key)
+                        if dec is None:
+                            self._reply_html(_render_setup_html(
+                                error="Decryption failed. Wrong key or corrupted backup.",
+                                ui_view=ui_view,
+                                ssl_warning=ssl_warning,
+                            ))
+                            return
+                        try:
+                            payload = json.loads(dec)
+                        except json.JSONDecodeError:
+                            self._reply_html(_render_setup_html(error="Decrypted backup is not valid JSON.", ui_view=ui_view, ssl_warning=ssl_warning))
+                            return
+                    else:
+                        payload = parsed
                     cfg_in = payload.get("config")
                     auth_in = payload.get("auth")
                     if isinstance(cfg_in, dict):
@@ -6688,6 +7274,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 "/check-elevated",
                 "/auto-create-task",
                 "/danger-restart",
+                "/danger-reset",
             ):
                 self._reply_html(_render_setup_html(error="Unsupported endpoint"), 404)
                 return
@@ -6722,6 +7309,21 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                         )
                     except OSError as e:
                         self._reply_html(_render_setup_html(error=f"Restart failed: {type(e).__name__}: {e}", ui_view=ui_view, ssl_warning=ssl_warning))
+                    return
+                if self.path == "/danger-reset":
+                    cfg = load_config()
+                    reset_cfg: Dict[str, Any] = {"monitors": []}
+                    if cfg.get("instance_id"):
+                        reset_cfg["instance_id"] = cfg["instance_id"]
+                    save_config(reset_cfg, reapply_cron=True)
+                    append_ui_log("danger-zone | configuration reset from UI")
+                    self._reply_html(
+                        _render_setup_html(
+                            security_message="Configuration reset. All monitors and peering cleared.",
+                            ui_view="settings",
+                            ssl_warning=ssl_warning,
+                        )
+                    )
                     return
                 if self.path == "/run-check":
                     output = _ui_run_check_now()
@@ -6847,8 +7449,8 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     output = _ui_check_elevated_access()
                     self._reply_html(
                         _render_setup_html(
-                            message="Elevated access check completed",
-                            action_output=output,
+                            elevated_check_message="Elevated access check completed",
+                            elevated_check_output=output,
                             show_setup_popup=stay_popup,
                             ui_view="setup",
                             ssl_warning=ssl_warning,
@@ -6889,17 +7491,23 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
 
                 if mode not in CHECK_MODES:
                     append_ui_log(f"save-config | invalid mode: {mode}")
-                    self._reply_html(_render_setup_html(error="Invalid check mode", ui_view=ui_view, ssl_warning=ssl_warning))
+                    self._reply_html(_render_setup_html(error="Invalid check mode", ui_view=ui_view, ssl_warning=ssl_warning, create_mode=not edit_original_name, edit_original_name=edit_original_name or None))
                     return
                 if not name:
                     name = f"{mode}-synology-check"
+                if len(name) < 2:
+                    self._reply_html(_render_setup_html(error="Monitor name must be at least 2 characters.", ui_view=ui_view, ssl_warning=ssl_warning, create_mode=not edit_original_name, edit_original_name=edit_original_name or None))
+                    return
+                if not kuma_url.strip():
+                    self._reply_html(_render_setup_html(error="Kuma Push URL is required.", ui_view=ui_view, ssl_warning=ssl_warning, create_mode=not edit_original_name, edit_original_name=edit_original_name or None))
+                    return
                 if not kuma_url.startswith(("http://", "https://")):
                     kuma_url = "https://" + kuma_url
                 kuma_url = normalize_kuma_url(kuma_url)
                 err = validate_kuma_url(kuma_url)
                 if err:
                     append_ui_log(f"save-config | invalid Kuma URL: {err}")
-                    self._reply_html(_render_setup_html(error=f"Invalid Kuma URL: {err}", ui_view=ui_view, ssl_warning=ssl_warning))
+                    self._reply_html(_render_setup_html(error=f"Invalid Kuma URL: {err}", ui_view=ui_view, ssl_warning=ssl_warning, create_mode=not edit_original_name, edit_original_name=edit_original_name or None))
                     return
                 try:
                     interval = max(INTERVAL_MIN, min(INTERVAL_MAX, int(interval_raw)))
@@ -6910,14 +7518,14 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 except ValueError:
                     probe_port = 0
                 if mode == "ping" and not probe_host:
-                    self._reply_html(_render_setup_html(error="Ping mode requires a probe host.", ui_view="setup", ssl_warning=ssl_warning))
+                    self._reply_html(_render_setup_html(error="Ping mode requires a probe host.", ui_view="setup", ssl_warning=ssl_warning, create_mode=not edit_original_name, edit_original_name=edit_original_name or None))
                     return
                 if mode == "port":
                     if not probe_host or probe_port < 1 or probe_port > 65535:
-                        self._reply_html(_render_setup_html(error="Port mode requires valid probe host and TCP port (1-65535).", ui_view="setup", ssl_warning=ssl_warning))
+                        self._reply_html(_render_setup_html(error="Port mode requires valid probe host and TCP port (1-65535).", ui_view="setup", ssl_warning=ssl_warning, create_mode=not edit_original_name, edit_original_name=edit_original_name or None))
                         return
                 if mode == "dns" and not dns_name:
-                    self._reply_html(_render_setup_html(error="DNS mode requires a DNS name/domain.", ui_view="setup", ssl_warning=ssl_warning))
+                    self._reply_html(_render_setup_html(error="DNS mode requires a DNS name/domain.", ui_view="setup", ssl_warning=ssl_warning, create_mode=not edit_original_name, edit_original_name=edit_original_name or None))
                     return
 
                 cfg = load_config()

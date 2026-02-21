@@ -1,2 +1,32 @@
 #!/bin/sh
+# Only wipe data on actual uninstall (not upgrade)
+if [ "${SYNOPKG_PKG_STATUS}" != "UNINSTALL" ] && [ "${SYNOPKG_PKG_STATUS}" != "uninstall" ]; then
+    exit 0
+fi
+
+PACKAGE="synology-monitor"
+
+# DSM @appdata persists after uninstall; must remove explicitly
+for base in /volume1 /volume2 /volume3 /usr/local; do
+    [ -d "${base}/@appdata/${PACKAGE}" ] && rm -rf "${base}/@appdata/${PACKAGE}"
+done
+
+# Legacy paths (in case package var still exists)
+VAR_DIR="/var/packages/${PACKAGE}/var"
+TARGET_DIR="/var/packages/${PACKAGE}/target"
+rm -f "${VAR_DIR}"/synology-monitor.json "${VAR_DIR}"/synology-auth.json \
+      "${VAR_DIR}"/synology-monitor-ui.log "${VAR_DIR}"/synology-*-cache.json \
+      "${VAR_DIR}"/synology-task-status.json "${VAR_DIR}"/synology-monitor-history.json \
+      "${VAR_DIR}"/synology-monitor-state.json "${VAR_DIR}"/synology-schedule-state.json \
+      2>/dev/null || true
+rm -rf "${VAR_DIR}"/certs "${VAR_DIR}"/peers 2>/dev/null || true
+rm -f "${TARGET_DIR}"/synology-monitor.json "${TARGET_DIR}"/synology-auth.json \
+      "${TARGET_DIR}"/synology-monitor-ui.log "${TARGET_DIR}"/synology-*-cache.json \
+      "${TARGET_DIR}"/synology-task-status.json "${TARGET_DIR}"/synology-monitor-history.json \
+      "${TARGET_DIR}"/synology-monitor-state.json "${TARGET_DIR}"/synology-schedule-state.json \
+      2>/dev/null || true
+rm -rf "${TARGET_DIR}"/certs "${TARGET_DIR}"/peers 2>/dev/null || true
+rm -f /root/.config/synology-monitor.json \
+      /root/.config/synology-monitor/synology-auth.json 2>/dev/null || true
+
 exit 0

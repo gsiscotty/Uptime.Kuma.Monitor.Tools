@@ -1,5 +1,9 @@
 #!/bin/sh
 
+# Clear backup cache on upgrade so next helper run repopulates with current logic
+# (e.g. error_detect is treated as warning, not failed)
+rm -f "/var/packages/synology-monitor/var/synology-backup-cache.json" 2>/dev/null || true
+
 POSTINST="/var/packages/synology-monitor/scripts/postinst"
 if [ -x "${POSTINST}" ]; then
     "${POSTINST}" || true

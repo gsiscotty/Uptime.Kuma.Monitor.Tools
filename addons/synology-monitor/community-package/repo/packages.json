@@ -5,10 +5,10 @@
       "name": "synology-monitor",
       "dname": "EasySystems GmbH - Kuma Monitor Addon",
       "displayname": "EasySystems GmbH - Kuma Monitor Addon",
-      "version": "1.0.0-0050",
+      "version": "1.0.0-0054",
       "arch": "noarch",
-      "description": "EasySystems GmbH Kuma Monitor Addon for Synology DSM with SMART, storage, backup, ping, port, DNS checks, guided elevated-access setup, diagnostics views, per-monitor actions, multi-instance peering with mTLS security, and Uptime Kuma push integration.",
-      "desc": "EasySystems GmbH Kuma Monitor Addon for Synology DSM with SMART, storage, backup, ping, port, DNS checks, guided elevated-access setup, diagnostics views, per-monitor actions, multi-instance peering with mTLS security, and Uptime Kuma push integration.",
+      "description": "EasySystems GmbH Kuma Monitor Addon for Synology DSM with SMART, storage, backup, ping, port, DNS checks, guided elevated-access setup, diagnostics views, per-monitor actions, multi-instance peering with mTLS security, and Uptime Kuma push integration. Proxy: Control Panel > Login Portal > Application. Add rule Source (FQDN/hostname) -> Destination http://localhost:8787 for HTTPS browser access. Do NOT use the proxy FQDN for peering (Master URL, Agent Callback URL); use internal hostname or IP:8787 so agents and master connect directly.",
+      "desc": "EasySystems GmbH Kuma Monitor Addon for Synology DSM with SMART, storage, backup, ping, port, DNS checks, guided elevated-access setup, diagnostics views, per-monitor actions, multi-instance peering with mTLS security, and Uptime Kuma push integration. Proxy: Control Panel > Login Portal > Application. Add rule Source (FQDN/hostname) -> Destination http://localhost:8787 for HTTPS browser access. Do NOT use the proxy FQDN for peering (Master URL, Agent Callback URL); use internal hostname or IP:8787 so agents and master connect directly.",
       "maintainer": "Konrad von Burg",
       "maintainer_url": "https://www.easysystems.ch/de",
       "distributor": "EasySystems GmbH",
@@ -19,9 +19,9 @@
       "thirdparty": "yes",
       "beta": "no",
       "os_min_ver": "7.0-40000",
-      "link": "https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools/releases/download/v1.0.0-0050/synology-monitor-basic.spk",
-      "checksum_sha256": "cd19d5c752364c700cbaf7f8044d6759a75ff375d99842393ff1d902ff010c61",
-      "size": 276480
+      "link": "https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools/releases/latest/download/synology-monitor-basic.spk",
+      "checksum_sha256": "30b649c26ef846f174b7185a62c0c1c84442ffe03bd05a0ca6f747ccccd6bbf1",
+      "size": 286720
     }
   ]
 }
