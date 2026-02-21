@@ -25,6 +25,21 @@ cleanup_helper_schedule() {
     fi
 }
 
+cleanup_backup_helper_schedule() {
+    if command -v crontab >/dev/null 2>&1; then
+        current="$(crontab -l 2>/dev/null || true)"
+        cleaned="$(printf "%s\n" "${current}" | sed "/${BACKUP_CRON_MARKER}/d")"
+        printf "%s\n" "${cleaned}" | crontab - >/dev/null 2>&1 || true
+    fi
+
+    if [ -w /etc/crontab ]; then
+        tmp_file="/tmp/${PACKAGE}-crontab-backup-clean.$$"
+        sed "/${BACKUP_CRON_MARKER}/d" /etc/crontab >"${tmp_file}" 2>/dev/null || cp /etc/crontab "${tmp_file}"
+        cp "${tmp_file}" /etc/crontab 2>/dev/null || true
+        rm -f "${tmp_file}"
+    fi
+}
+
 cleanup_scheduler_schedule() {
     if command -v crontab >/dev/null 2>&1; then
         current="$(crontab -l 2>/dev/null || true)"
@@ -70,9 +85,11 @@ if [ -f "${SCHED_PID_FILE}" ]; then
 fi
 
 rm -f "${HELPER_SCRIPT}" 2>/dev/null || true
+rm -f "${BACKUP_HELPER_SCRIPT}" 2>/dev/null || true
 rm -f "${SYSLOG_HELPER_SCRIPT}" 2>/dev/null || true
 rm -f "${SCHEDULER_SCRIPT}" 2>/dev/null || true
 cleanup_helper_schedule
+cleanup_backup_helper_schedule
 cleanup_syslog_helper_schedule
 cleanup_scheduler_schedule
 
