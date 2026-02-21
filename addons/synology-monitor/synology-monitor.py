@@ -73,12 +73,14 @@ except Exception:
             return False
 
 
-VERSION = "1.0.0-0038"
+VERSION = "1.0.0-0049"
 CONFIG_FILE_MODE = 0o600
 CRON_MARKER = "# synology-monitor.py - do not edit this line manually"
 INTERVAL_MIN = 1
 INTERVAL_MAX = 1440
 CHECK_MODES = ("smart", "storage", "ping", "port", "dns", "backup")
+PEER_ROLES = ("standalone", "agent", "master")
+PEER_HEALTH_TIMEOUT_SEC = 180
 BACK_KEYS = ("0", "b", "back", "q", "quit")
 CHANGES_NOTICE = "  Changes are not saved until you confirm (Save/Apply)."
 ALLOWED_SCHEMES = ("https", "http")
@@ -487,6 +489,15 @@ def _get_instance_id(cfg: Dict[str, Any]) -> str:
     return iid
 
 
+def _is_valid_peer_instance_id(instance_id: str) -> bool:
+    iid = str(instance_id or "").strip()
+    if len(iid) < 8:
+        return False
+    if iid.lower() in {"none", "null", "unknown", "-", "?"}:
+        return False
+    return bool(re.match(r"^[A-Za-z0-9_-]+$", iid))
+
+
 def get_peer_data_dir() -> Path:
     d = get_runtime_data_dir() / "peers"
     d.mkdir(parents=True, exist_ok=True)
@@ -803,6 +814,65 @@ def _decrypt_payload(encoded: str, token: str) -> Optional[str]:
     return bytes(plaintext_bytes).decode("utf-8", errors="ignore")
 
 
+def _agent_request_cert(cfg: Dict[str, Any]) -> str:
+    """Agent requests a signed cert from master and stores cert chain locally."""
+    role = str(cfg.get("peer_role", "standalone") or "standalone").lower()
+    if role != "agent":
+        return "Certificate request is only available for agent role."
+    master_url = str(cfg.get("peer_master_url", "") or "").strip().rstrip("/")
+    token = str(cfg.get("peering_token", "") or "").strip()
+    if not master_url or not token:
+        return "Missing master URL or peering token."
+    if not _openssl_available():
+        return "openssl not available on this system."
+    instance_id = _get_instance_id(cfg)
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", instance_id)[:40]
+    d = get_certs_dir()
+    key_path = d / f"{safe_id}.key"
+    csr_path = d / f"{safe_id}.csr"
+    crt_path = d / f"{safe_id}.crt"
+    try:
+        rc, out = _run_cmd([
+            "openssl", "req", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", str(key_path), "-out", str(csr_path),
+            "-subj", f"/CN=agent-{safe_id[:20]}",
+        ], timeout_sec=25)
+        if rc != 0:
+            return f"CSR generation failed: {out[:200]}"
+        csr_pem = csr_path.read_text(encoding="utf-8")
+        payload = {
+            "instance_id": instance_id,
+            "instance_name": str(cfg.get("instance_name", "") or ""),
+            "version": VERSION,
+            "monitor_count": len(cfg.get("monitors", [])) if isinstance(cfg.get("monitors", []), list) else 0,
+            "csr_pem": csr_pem,
+        }
+        status, body = _peer_http_request(master_url, token, "POST", "/api/peer/register", payload=payload, timeout=15)
+        if status >= 300:
+            return f"Register failed (HTTP {status}): {body[:300]}"
+        try:
+            data = json.loads(body)
+        except (json.JSONDecodeError, ValueError):
+            return "Register failed: invalid response from master."
+        signed_cert = str(data.get("signed_cert", "") or "").strip()
+        ca_cert = str(data.get("ca_cert", "") or "").strip()
+        master_cert = str(data.get("master_cert", "") or "").strip()
+        if not signed_cert or not ca_cert:
+            return "Register failed: master did not return signed cert + CA cert."
+        crt_path.write_text(signed_cert + ("\n" if not signed_cert.endswith("\n") else ""), encoding="utf-8")
+        (d / "ca.crt").write_text(ca_cert + ("\n" if not ca_cert.endswith("\n") else ""), encoding="utf-8")
+        if master_cert:
+            (d / "master.crt").write_text(master_cert + ("\n" if not master_cert.endswith("\n") else ""), encoding="utf-8")
+            (d / "master.crt").chmod(0o644)
+        key_path.chmod(0o600)
+        crt_path.chmod(0o644)
+        (d / "ca.crt").chmod(0o644)
+        csr_path.unlink(missing_ok=True)
+        return "Certificate signed by master CA and stored locally."
+    except Exception as e:
+        return f"Certificate request failed: {type(e).__name__}: {e}"
+
+
 def _peer_push_to_master(cfg: Dict[str, Any]) -> str:
     master_url = str(cfg.get("peer_master_url", "") or "").strip().rstrip("/")
     token = str(cfg.get("peering_token", "") or "").strip()
@@ -853,10 +923,27 @@ def _peer_http_request(url: str, token: str, method: str = "GET",
     url = url.strip().rstrip("/")
     endpoint = url + (path_override or "/api/peer/health")
     parsed = urlparse(endpoint)
+    req_path = parsed.path or path_override or "/api/peer/health"
+    if parsed.query:
+        req_path += "?" + parsed.query
+    is_register = req_path.startswith("/api/peer/register")
+    is_peer_api = req_path.startswith("/api/peer/")
     if parsed.scheme == "https":
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        cfg = load_config()
+        cert_path, key_path, ca_path = _get_mtls_cert_paths(cfg)
+        if cert_path and key_path and ca_path:
+            ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+            ctx.load_verify_locations(ca_path)
+            ctx.load_cert_chain(cert_path, key_path)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_REQUIRED
+        else:
+            # Bootstrap path before certificates exist.
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            if not is_register:
+                append_ui_log("mtls | HTTPS request without local certs (token fallback)")
         conn = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=timeout, context=ctx)
     else:
         conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=timeout)
@@ -864,13 +951,25 @@ def _peer_http_request(url: str, token: str, method: str = "GET",
     body_bytes: Optional[bytes] = None
     if payload is not None:
         headers["Content-Type"] = "application/json"
-        body_bytes = json.dumps(payload).encode("utf-8")
-    req_path = parsed.path or path_override or "/api/peer/health"
-    if parsed.query:
-        req_path += "?" + parsed.query
+        if parsed.scheme != "https" and is_peer_api:
+            plaintext = json.dumps(payload)
+            body_bytes = json.dumps({"enc": _encrypt_payload(plaintext, token)}).encode("utf-8")
+            headers["X-Peer-Encrypted"] = "1"
+        else:
+            body_bytes = json.dumps(payload).encode("utf-8")
     conn.request(method, req_path, body=body_bytes, headers=headers)
     resp = conn.getresponse()
-    resp_body = resp.read().decode("utf-8", errors="ignore")[:64000]
+    resp_raw = resp.read().decode("utf-8", errors="ignore")[:64000]
+    resp_body = resp_raw
+    if parsed.scheme != "https" and is_peer_api and resp_raw:
+        try:
+            wrapped = json.loads(resp_raw)
+            if isinstance(wrapped, dict) and isinstance(wrapped.get("enc"), str):
+                dec = _decrypt_payload(str(wrapped.get("enc", "")), token)
+                if dec is not None:
+                    resp_body = dec
+        except (json.JSONDecodeError, ValueError):
+            pass
     status = resp.status
     conn.close()
     return status, resp_body
@@ -3357,8 +3456,9 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
         role_opts += f"<option value='{r}' {sel}>{r.capitalize()}</option>"
 
     live_panel_html = ""
+    master_peer_actions_html = ""
     now = int(time.time())
-    valid_peers = [p for p in peers if len(str(p.get("instance_id", "") or "").strip()) >= 4] if peers else []
+    valid_peers = [p for p in peers if _is_valid_peer_instance_id(str(p.get("instance_id", "") or ""))] if peers else []
     online = 0
     for _vp in valid_peers:
         _vp_age = now - int(_vp.get("last_seen", 0) or 0) if int(_vp.get("last_seen", 0) or 0) else 9999
@@ -3372,7 +3472,7 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
     if peers:
         for p in peers:
             pid = str(p.get("instance_id", "") or "").strip()
-            if not pid or len(pid) < 4:
+            if not _is_valid_peer_instance_id(pid):
                 continue
             pname = str(p.get("instance_name", "") or pid[:8])
             last_seen = int(p.get("last_seen", 0) or 0)
@@ -3440,19 +3540,21 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
     if not peers and role == "master":
         no_agents_hint = "<div class='muted' style='font-size:12px;text-align:center;padding:12px 0;'>No agents registered yet. Click <b>Add agent</b> to register one, or agents will appear here automatically once they push data.</div>"
     if role == "master":
-        live_panel_html = (
-            f"<div style='display:flex;gap:8px;margin-top:10px;align-items:center;justify-content:flex-end;'>"
+        master_peer_actions_html = (
+            f"<div style='display:flex;gap:8px;margin-top:10px;align-items:center;justify-content:flex-start;flex-wrap:wrap;'>"
             f"<form method='post' action='/peer/sync-now' style='margin:0;'>"
             f"<button type='submit'>Sync all agents</button>"
             f"</form>"
             f"<button onclick=\"window._openAddAgent && window._openAddAgent(this)\">Add agent</button>"
             f"</div>"
-            f"<div style='margin-top:12px;border:1px solid var(--border);border-radius:10px;background:var(--card-soft);padding:12px;'>"
+        )
+        live_panel_html = (
+            f"<div style='margin-top:16px;border:1px solid var(--border);border-radius:10px;background:var(--card-soft);padding:12px;'>"
             f"<div id='peer-header' style='display:flex;align-items:center;gap:10px;margin-bottom:8px;'>"
             f"<strong style='font-size:14px;'>Connected Agents</strong>"
             f"<span id='peer-online-badge' class='badge ok'>{online} online</span>"
             f"<span id='peer-offline-badge' class='badge err' style='{'display:none' if not offline else ''}'>{offline} offline</span>"
-            f"<span id='peer-remote-count' class='muted'>Remote monitors: {peer_monitor_count}</span>"
+            f"<span id='peer-remote-count' class='muted' style='margin-left:auto;'>Remote monitors: {peer_monitor_count}</span>"
             f"</div>"
             f"<div id='peer-live-panel'>"
             + peer_rows + no_agents_hint
@@ -3558,7 +3660,7 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
                     f"<span class='muted' style='font-size:11px;flex:1;'>{html.escape(a)}</span>"
                     f"<form method='post' action='/peer/revoke-agent-cert' style='margin:0;'>"
                     f"<input type='hidden' name='agent_id' value='{html.escape(a)}'>"
-                    f"<button type='submit' style='padding:3px 8px;font-size:10px;border:1px solid #ef4444;color:#ef4444;background:transparent;border-radius:6px;cursor:pointer;'"
+                    f"<button type='submit' style='padding:6px 12px;font-size:12px;border:1px solid #ef4444;color:#ef4444;background:transparent;border-radius:8px;font-weight:600;cursor:pointer;line-height:1.2;'"
                     f" onclick=\"return confirm('Revoke cert for {html.escape(a)}?')\">Revoke</button></form></div>"
                     for a in signed
                 )
@@ -3634,27 +3736,20 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
         <div class="muted" style="margin-top:6px;">Instance ID: <code>{html.escape(instance_id)}</code></div>
         {"<div class='ok' style='margin-top:8px;white-space:pre-wrap;'>" + html.escape(peering_message) + "</div>" if peering_message else ""}
         {security_panel}
-        {live_panel_html}
         <form method="post" action="/peer/save-settings">
-          <div class="row">
-            <div>
-              <label>Instance Name</label>
-              <input name="instance_name" value="{html.escape(instance_name)}" placeholder="e.g. HQ-NAS">
-            </div>
-            <div>
-              <label>Role</label>
-              <select name="peer_role">{role_opts}</select>
-            </div>
+          <div>
+            <label>Role</label>
+            <select name="peer_role">{role_opts}</select>
           </div>
+          {master_peer_actions_html}
           <label>Peering Token</label>
           <div style="margin-top:4px;"><code style="word-break:break-all;font-size:11px;">{html.escape(token_display)}</code></div>
           <input name="peering_token" placeholder="Paste or generate" style="margin-top:6px;">
           <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
-            <form method="post" action="/peer/generate-token" style="margin:0;">
-              <button type="submit">Generate new token</button>
-            </form>
+            <button type="submit" formaction="/peer/generate-token" formmethod="post">Generate new token</button>
           </div>
           {agent_fields}
+        {live_panel_html}
       </div>
     """
 
@@ -3682,6 +3777,9 @@ def _render_setup_html(
     log_source: str = "local",
 ) -> str:
     cfg = load_config()
+    browser_instance_name = str(cfg.get("instance_name", "") or "").strip()
+    if not browser_instance_name:
+        browser_instance_name = str(cfg.get("instance_id", "") or "").strip()[:8]
     monitors = cfg.get("monitors", [])
     interval = int(cfg.get("cron_interval_minutes", 60))
     cron_enabled = bool(cfg.get("cron_enabled", False))
@@ -3988,7 +4086,7 @@ def _render_setup_html(
         src_chips = [f"<a class='chip {'active' if source_label=='local' else ''}' href='/?view=overview&diag_view={diag_label}&log_filter={filter_label}&log_source=local'>Local</a>"]
         for sp in (cfg.get("peers", []) or []):
             sp_id = str(sp.get("instance_id", "") or "").strip()
-            if not sp_id or len(sp_id) < 4:
+            if not _is_valid_peer_instance_id(sp_id):
                 continue
             sp_name = str(sp.get("instance_name", "") or sp_id[:8])
             src_chips.append(
@@ -4011,8 +4109,13 @@ def _render_setup_html(
     target_options = ""
     if is_master and peers_list and not edit_original_name:
         target_options = "<option value='local' selected>Local (this instance)</option>"
+        seen_target_ids: set[str] = set()
         for tp in peers_list:
-            tp_id = str(tp.get("instance_id", ""))
+            tp_id = str(tp.get("instance_id", "") or "").strip()
+            # Ignore malformed/stale peer IDs in the create-monitor target selector.
+            if (not _is_valid_peer_instance_id(tp_id)) or tp_id in seen_target_ids:
+                continue
+            seen_target_ids.add(tp_id)
             tp_name = str(tp.get("instance_name", "") or tp_id[:8])
             target_options += f"<option value='{html.escape(tp_id)}'>{html.escape(tp_name)}</option>"
     ui_view = (ui_view or "overview").strip().lower()
@@ -4129,10 +4232,16 @@ def _render_setup_html(
         <h3>Application Settings & Security</h3>
         {"<div class='ok'>" + html.escape(security_message) + "</div>" if security_message else ""}
         {"<pre>" + html.escape(security_output) + "</pre>" if security_output else ""}
-        <div class="muted">Admin account protected by password + mandatory TOTP 2FA. Unused recovery codes: {recovery_unused}</div>
+        <div class="muted">Admin account protected by password + mandatory TOTP 2FA.</div>
+        <form method="post" action="/settings/save-instance-name">
+          <label>Instance Name</label>
+          <input name="instance_name" value="{html.escape(str(cfg.get('instance_name', '') or ''))}" placeholder="e.g. HQ-NAS">
+          <div class="button-row"><button type="submit">Save instance name</button></div>
+        </form>
         <form method="post" action="/auth/change-password">
           <input type="hidden" name="username" value="admin" autocomplete="username">
           <label>Change password</label>
+          <div class="muted">Unused recovery codes: {recovery_unused}</div>
           <div class="row">
             <div><input name="current_password" type="password" autocomplete="current-password" placeholder="Current password" required></div>
             <div><input name="new_password" type="password" autocomplete="new-password" minlength="10" placeholder="New password" required></div>
@@ -4150,6 +4259,11 @@ def _render_setup_html(
             <div><button type="submit">Rotate TOTP + recovery codes</button></div>
           </div>
         </form>
+      </div>
+      {_render_peering_card(cfg, peering_message=peering_message)}
+      <div class="card">
+        <h3>Danger Zone</h3>
+        <div class="muted">Restart package services from UI (web UI + scheduler loop).</div>
         <form method="post" action="/auth/import" enctype="multipart/form-data">
           <label>Import settings backup (JSON export)</label>
           <textarea name="import_payload" rows="7" style="width:100%;margin-top:6px;box-sizing:border-box;border:1px solid #30405b;border-radius:8px;background:#0f1726;color:#d7e2f0;padding:8px;"></textarea>
@@ -4160,14 +4274,9 @@ def _render_setup_html(
             <a class="close-link" href="/auth/export">Export safe settings</a>
           </div>
         </form>
-      </div>
-      {_render_peering_card(cfg, peering_message=peering_message)}
-      <div class="card">
-        <h3>Danger Zone</h3>
-        <div class="muted">Restart package services from UI (web UI + scheduler loop).</div>
         <div class="button-row">
           <form method="post" action="/danger-restart" onsubmit="return confirm('Restart addon now? UI will disconnect briefly.');">
-            <button type="submit">Restart addon</button>
+            <button type="submit" style="border-color:#ef4444;color:#ef4444;">Restart addon</button>
           </form>
         </div>
       </div>
@@ -4180,7 +4289,7 @@ def _render_setup_html(
 <head>
   <meta charset="utf-8">
   <link rel="icon" type="image/png" href="{html.escape(BRAND_FAVICON_URL)}">
-  <title>{html.escape(PRODUCT_NAME)} - Setup</title>
+  <title>{(html.escape(browser_instance_name) + " - ") if browser_instance_name else ""}{html.escape(PRODUCT_NAME)} - Setup</title>
   <style>
     :root {{
       --bg: #0b1220; --card: #121d2f; --card-soft: #17243a; --border: #2a3d5a; --text: #d7e2f0; --muted: #8fa1b8;
@@ -4308,7 +4417,7 @@ def _render_setup_html(
     }}
   </style>
 </head>
-<body>
+<body data-ui-view="{html.escape(ui_view)}" data-diag-view="{html.escape(diag_label)}" data-log-filter="{html.escape(filter_label)}" data-log-source="{html.escape(source_label)}">
   <div class="container">
     <div class="card">
       <div class="brand-head">
@@ -4317,7 +4426,7 @@ def _render_setup_html(
         </div>
         <div class="brand-center">
           <a href="{html.escape(BRAND_URL)}" target="_blank" rel="noopener noreferrer"><img class="brand-logo" src="{html.escape(BRAND_LOGO_URL)}" alt="{html.escape(BRAND_NAME)} logo"></a>
-          <div class="brand-summary">Automated Synology SMART and storage monitoring, securely pushed to Uptime Kuma.</div>
+          <div class="brand-summary">All-in-one Synology monitoring: SMART, storage, backup, ping, port, DNS, secure peering, and instant Uptime Kuma alerts.</div>
         </div>
       </div>
       {status_html}
@@ -4412,6 +4521,59 @@ def _render_setup_html(
     </div>
     <script>
       (function () {{
+        var bodyMeta = document.body || null;
+        var uiView = bodyMeta ? (bodyMeta.getAttribute("data-ui-view") || "overview") : "overview";
+        var diagView = bodyMeta ? (bodyMeta.getAttribute("data-diag-view") || "logs") : "logs";
+        var logFilter = bodyMeta ? (bodyMeta.getAttribute("data-log-filter") || "all") : "all";
+        var logSource = bodyMeta ? (bodyMeta.getAttribute("data-log-source") || "local") : "local";
+        var qs = new URLSearchParams();
+        qs.set("view", uiView);
+        qs.set("diag_view", diagView);
+        qs.set("log_filter", logFilter);
+        qs.set("log_source", logSource);
+        var canonicalPath = "/?" + qs.toString();
+        try {{
+          if (window.location.pathname !== "/" || window.location.search !== ("?" + qs.toString())) {{
+            window.history.replaceState(null, "", canonicalPath);
+          }}
+        }} catch (e) {{
+          /* ignore history API edge-cases */
+        }}
+        try {{
+          var restoreY = sessionStorage.getItem("synmon_scroll_y");
+          if (restoreY !== null) {{
+            sessionStorage.removeItem("synmon_scroll_y");
+            var yVal = parseInt(restoreY, 10);
+            if (!isNaN(yVal) && yVal > 0) window.scrollTo(0, yVal);
+          }}
+        }} catch (e) {{
+          /* ignore session storage errors */
+        }}
+        function ensureUiViewField(form) {{
+          if (!form || !form.querySelector) return;
+          if (!form.querySelector("input[name='ui_view']")) {{
+            var uiInput = document.createElement("input");
+            uiInput.type = "hidden";
+            uiInput.name = "ui_view";
+            uiInput.value = uiView;
+            form.appendChild(uiInput);
+          }}
+        }}
+        var postForms = document.querySelectorAll("form[method='post'], form[method='POST']");
+        postForms.forEach(function(form) {{ ensureUiViewField(form); }});
+        // Capture submit globally so dynamically re-rendered forms (peer live panel) are covered too.
+        document.addEventListener("submit", function(ev) {{
+          var form = ev && ev.target ? ev.target : null;
+          if (!form || !form.getAttribute) return;
+          var method = (form.getAttribute("method") || "get").toLowerCase();
+          if (method !== "post") return;
+          ensureUiViewField(form);
+          try {{
+            sessionStorage.setItem("synmon_scroll_y", String(Math.max(0, Math.round(window.scrollY || 0))));
+          }} catch (e) {{
+            /* ignore session storage errors */
+          }}
+        }}, true);
         var modeEl = document.getElementById("check_mode");
         var nameEl = document.getElementById("name");
         var probeHostWrap = document.getElementById("probe-host-wrap");
@@ -4874,6 +5036,11 @@ def _render_setup_html(
 def _render_auth_shell(title: str, body_html: str, info: str = "", error: str = "", ssl_warning: str = "") -> str:
     info_html = f'<div class="ok">{html.escape(info)}</div>' if info else ""
     err_html = f'<div class="err">{html.escape(error)}</div>' if error else ""
+    try:
+        cfg = load_config()
+        browser_instance_name = str(cfg.get("instance_name", "") or "").strip()
+    except Exception:
+        browser_instance_name = ""
     warn_html = (
         "<details class='warn-wrap'>"
         "<summary class='warn-btn'>Connection security warning (more info)</summary>"
@@ -4888,7 +5055,7 @@ def _render_auth_shell(title: str, body_html: str, info: str = "", error: str = 
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="icon" type="image/png" href="{html.escape(BRAND_FAVICON_URL)}">
-  <title>{html.escape(PRODUCT_NAME)} - Security</title>
+  <title>{(html.escape(browser_instance_name) + " - ") if browser_instance_name else ""}{html.escape(PRODUCT_NAME)} - Security</title>
   <style>
     body {{ font-family: "Inter","Segoe UI",-apple-system,BlinkMacSystemFont,Arial,sans-serif; margin: 0; background: radial-gradient(circle at 20% 0%, #1f4a80 0%, #0a1220 50%, #070b14 100%); color:#e6eef8; min-height: 100vh; }}
     .wrap {{ max-width: 980px; margin: 28px auto; padding: 0 14px; }}
@@ -4928,7 +5095,7 @@ def _render_auth_shell(title: str, body_html: str, info: str = "", error: str = 
             <img class="hero-logo" src="{html.escape(BRAND_LOGO_URL)}" alt="{html.escape(BRAND_NAME)} logo">
           </a>
         </div>
-        <div class="hero-tagline">Secure Synology monitoring, with clear status and trusted uptime signals.</div>
+        <div class="hero-tagline">All-in-one Synology monitoring: SMART, storage, backup, ping, port, DNS, secure peering, and instant Uptime Kuma alerts.</div>
         <div class="muted" style="text-align:center;margin-top:10px;">Recommendation: publish this UI behind Synology Reverse Proxy with HTTPS.</div>
       </div>
       <div class="card">
@@ -5389,6 +5556,68 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 return False
             return hmac.compare_digest(token, expected)
 
+        def _peer_mtls_enforced(self) -> bool:
+            cfg = load_config()
+            cert, key, ca = _get_mtls_cert_paths(cfg)
+            return bool(cert and key and ca)
+
+        def _peer_client_cert_present(self) -> bool:
+            if not isinstance(self.connection, ssl.SSLSocket):
+                return False
+            try:
+                cert = self.connection.getpeercert()
+                return bool(cert)
+            except Exception:
+                return False
+
+        def _require_peer_mtls(self, allow_token_only: bool = False) -> bool:
+            if allow_token_only or not self._peer_mtls_enforced():
+                return True
+            if self._peer_client_cert_present():
+                return True
+            self._reply_json({"error": "mTLS client certificate required"}, 401)
+            return False
+
+        def _read_peer_body(self) -> Tuple[str, bool]:
+            raw_len = int(self.headers.get("Content-Length", "0"))
+            body_raw = self.rfile.read(raw_len).decode("utf-8", errors="ignore")
+            if isinstance(self.connection, ssl.SSLSocket):
+                return body_raw, True
+            if not body_raw:
+                return body_raw, True
+            try:
+                wrapped = json.loads(body_raw)
+            except (json.JSONDecodeError, ValueError):
+                return body_raw, True
+            if not isinstance(wrapped, dict) or not isinstance(wrapped.get("enc"), str):
+                return body_raw, True
+            cfg = load_config()
+            token = str(cfg.get("peering_token", "") or "").strip()
+            if not token:
+                return "", False
+            dec = _decrypt_payload(str(wrapped.get("enc", "")), token)
+            if dec is None:
+                return "", False
+            return dec, True
+
+        def _reply_peer_json(self, data: Dict[str, Any], code: int = 200) -> None:
+            if isinstance(self.connection, ssl.SSLSocket):
+                self._reply_json(data, code)
+                return
+            cfg = load_config()
+            token = str(cfg.get("peering_token", "") or "").strip()
+            if not token:
+                self._reply_json(data, code)
+                return
+            payload = json.dumps({"enc": _encrypt_payload(json.dumps(data), token)}).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Peer-Encrypted", "1")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
         def _check_get_signature(self) -> None:
             """Best-effort signature verification for GET peer requests (empty body)."""
             sig = self.headers.get("X-Peer-Sig", "")
@@ -5411,12 +5640,15 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 return
             parsed = urlparse(self.path)
             if parsed.path == "/api/peer/health":
+                if not self._require_peer_mtls():
+                    return
                 if not self._verify_peer_token():
                     self._reply_json({"error": "unauthorized"}, 401)
                     return
                 self._check_get_signature()
                 cfg = load_config()
-                self._reply_json({
+                mtls_status = _get_mtls_security_status(cfg)
+                self._reply_peer_json({
                     "status": "ok",
                     "instance_id": _get_instance_id(cfg),
                     "instance_name": str(cfg.get("instance_name", "") or ""),
@@ -5428,6 +5660,8 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 }, 200)
                 return
             if parsed.path == "/api/peer/snapshot":
+                if not self._require_peer_mtls():
+                    return
                 if not self._verify_peer_token():
                     self._reply_json({"error": "unauthorized"}, 401)
                     return
@@ -5435,7 +5669,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 cfg = load_config()
                 history = _load_history()
                 state = _load_monitor_state()
-                self._reply_json({
+                self._reply_peer_json({
                     "instance_id": _get_instance_id(cfg),
                     "instance_name": str(cfg.get("instance_name", "") or ""),
                     "version": VERSION,
@@ -5446,6 +5680,8 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 }, 200)
                 return
             if parsed.path == "/api/peer/config":
+                if not self._require_peer_mtls():
+                    return
                 if not self._verify_peer_token():
                     self._reply_json({"error": "unauthorized"}, 401)
                     return
@@ -5458,9 +5694,11 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     "instance_name": str(cfg.get("instance_name", "") or ""),
                     "peer_role": str(cfg.get("peer_role", "standalone") or "standalone"),
                 }
-                self._reply_json(safe_cfg, 200)
+                self._reply_peer_json(safe_cfg, 200)
                 return
             if parsed.path == "/api/peer/diag":
+                if not self._require_peer_mtls():
+                    return
                 if not self._verify_peer_token():
                     self._reply_json({"error": "unauthorized"}, 401)
                     return
@@ -5471,7 +5709,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 cfg = load_config()
                 history = _load_history()
                 text = _build_diag_text(cfg, history, diag_view=view, log_filter=lf)
-                self._reply_json({"text": text}, 200)
+                self._reply_peer_json({"text": text}, 200)
                 return
             auth = _load_auth_state()
             ssl_warning = self._ssl_warning_text()
@@ -5614,11 +5852,15 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
             if self._redirect_http_to_https():
                 return
             if self.path == "/api/peer/push":
+                if not self._require_peer_mtls():
+                    return
                 if not self._verify_peer_token():
                     self._reply_json({"error": "unauthorized"}, 401)
                     return
-                raw_len = int(self.headers.get("Content-Length", "0"))
-                body = self.rfile.read(raw_len).decode("utf-8", errors="ignore")
+                body, ok_body = self._read_peer_body()
+                if not ok_body:
+                    self._reply_json({"error": "invalid encrypted payload"}, 400)
+                    return
                 try:
                     data = json.loads(body)
                 except (json.JSONDecodeError, ValueError):
@@ -5643,7 +5885,9 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                         p["monitor_count"] = len(data.get("monitors", []))
                         p["version"] = str(data.get("version", "") or "")
                         p["status"] = "online"
-                        if agent_url:
+                        existing_url = str(p.get("url", "") or "").strip()
+                        # Preserve a manually set URL; only auto-fill from callback when unlocked.
+                        if agent_url and (not existing_url or not bool(p.get("url_locked", False))):
                             p["url"] = agent_url
                         found = True
                         break
@@ -5666,10 +5910,15 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 self._reply_peer_json({"status": "ok", "received": True}, 200)
                 return
             if self.path == "/api/peer/register":
+                if not self._require_peer_mtls(allow_token_only=True):
+                    return
                 if not self._verify_peer_token():
                     self._reply_json({"error": "unauthorized"}, 401)
                     return
-                body, _ = self._read_peer_body()
+                body, ok_body = self._read_peer_body()
+                if not ok_body:
+                    self._reply_json({"error": "invalid encrypted payload"}, 400)
+                    return
                 try:
                     data = json.loads(body)
                 except (json.JSONDecodeError, ValueError):
@@ -5703,16 +5952,58 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                         "status": "online",
                         "role": "agent",
                     })
+                csr_pem = str(data.get("csr_pem", "") or "").strip()
+                signed_cert = ""
+                ca_cert = ""
+                master_cert = ""
+                if csr_pem:
+                    ca_key = get_certs_dir() / "ca.key"
+                    ca_crt = get_certs_dir() / "ca.crt"
+                    if not ca_key.exists() or not ca_crt.exists():
+                        ok_ca, msg_ca = _generate_ca(force=False)
+                        if not ok_ca:
+                            self._reply_json({"error": f"master CA unavailable: {msg_ca}"}, 500)
+                            return
+                        cfg2 = load_config()
+                        inst_id = _get_instance_id(cfg2)
+                        _generate_instance_cert(inst_id, cn_prefix="master")
+                    signed_pem, sign_msg = _sign_agent_csr(csr_pem, peer_id)
+                    if not signed_pem:
+                        self._reply_json({"error": f"CSR signing failed: {sign_msg}"}, 500)
+                        return
+                    signed_cert = signed_pem
+                    try:
+                        ca_cert = (get_certs_dir() / "ca.crt").read_text(encoding="utf-8")
+                    except OSError:
+                        ca_cert = ""
+                    cfg3 = load_config()
+                    m_cert, _, _ = _get_mtls_cert_paths(cfg3)
+                    if m_cert:
+                        try:
+                            master_cert = Path(m_cert).read_text(encoding="utf-8")
+                        except OSError:
+                            master_cert = ""
                 cfg["peers"] = peers
                 save_config(cfg, reapply_cron=False)
                 append_ui_log(f"peer-register | {data.get('instance_name', peer_id)} registered")
-                self._reply_json({"status": "ok", "registered": True}, 200)
+                reply_data: Dict[str, Any] = {"status": "ok", "registered": True}
+                if signed_cert and ca_cert:
+                    reply_data["signed_cert"] = signed_cert
+                    reply_data["ca_cert"] = ca_cert
+                    if master_cert:
+                        reply_data["master_cert"] = master_cert
+                self._reply_peer_json(reply_data, 200)
                 return
             if self.path == "/api/peer/create-monitor":
+                if not self._require_peer_mtls():
+                    return
                 if not self._verify_peer_token():
                     self._reply_json({"error": "unauthorized"}, 401)
                     return
-                body, _ = self._read_peer_body()
+                body, ok_body = self._read_peer_body()
+                if not ok_body:
+                    self._reply_json({"error": "invalid encrypted payload"}, 400)
+                    return
                 try:
                     data = json.loads(body)
                 except (json.JSONDecodeError, ValueError):
@@ -5769,7 +6060,6 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 body = self.rfile.read(raw_len).decode("utf-8", errors="ignore")
                 form = parse_qs(body, keep_blank_values=True)
                 cfg = load_config()
-                cfg["instance_name"] = (form.get("instance_name", [""])[0] or "").strip()
                 role = (form.get("peer_role", ["standalone"])[0] or "standalone").strip().lower()
                 if role not in PEER_ROLES:
                     role = "standalone"
@@ -5946,6 +6236,14 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     if v:
                         mon_cfg[extra] = v
                 cfg = load_config()
+                if target_peer and len(target_peer) < 4:
+                    ssl_warning = self._ssl_warning_text()
+                    self._reply_html(_render_setup_html(
+                        peering_message=f"Invalid target peer '{target_peer}'.",
+                        ui_view="settings",
+                        ssl_warning=ssl_warning,
+                    ))
+                    return
                 result = _peer_create_remote_monitor(cfg, target_peer, mon_cfg)
                 append_ui_log(f"peer-create-remote | peer={target_peer} monitor={m_name} result={result}")
                 ssl_warning = self._ssl_warning_text()
@@ -5972,6 +6270,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 for p in peers:
                     if str(p.get("instance_id", "")) == upd_id:
                         p["url"] = upd_url
+                        p["url_locked"] = bool(upd_url)
                         updated = True
                         break
                 cfg["peers"] = peers
@@ -6017,6 +6316,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 }
                 if a_url:
                     new_peer["url"] = a_url
+                    new_peer["url_locked"] = True
                 peers.append(new_peer)
                 cfg["peers"] = peers
                 save_config(cfg, reapply_cron=False)
@@ -6367,6 +6667,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 self._redirect("/auth/login")
                 return
             if self.path not in (
+                "/settings/save-instance-name",
                 "/save",
                 "/run-check",
                 "/run-check-monitor",
@@ -6391,6 +6692,21 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 self._reply_html(_render_setup_html(error="Unsupported endpoint"), 404)
                 return
             try:
+                if self.path == "/settings/save-instance-name":
+                    raw_len = int(self.headers.get("Content-Length", "0"))
+                    body = self.rfile.read(raw_len).decode("utf-8", errors="ignore")
+                    form = parse_qs(body, keep_blank_values=True)
+                    instance_name = (form.get("instance_name", [""])[0] or "").strip()
+                    cfg = load_config()
+                    cfg["instance_name"] = instance_name
+                    save_config(cfg, reapply_cron=False)
+                    append_ui_log(f"settings | instance name saved: {instance_name or '-'}")
+                    self._reply_html(_render_setup_html(
+                        security_message="Instance name saved.",
+                        ui_view="settings",
+                        ssl_warning=ssl_warning,
+                    ))
+                    return
                 if self.path == "/danger-restart":
                     service_script = "/var/packages/synology-monitor/scripts/start-stop-status"
                     cmd = f'(sleep 1; "{service_script}" stop; sleep 1; "{service_script}" start) >/dev/null 2>&1'
