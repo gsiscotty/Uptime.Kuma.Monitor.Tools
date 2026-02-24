@@ -38,6 +38,17 @@ Monitors Synology NAS storage/RAID status and SMART health, then pushes to Uptim
 curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/synology-monitor/install.sh | bash
 ```
 
+### 4) Unix Monitor
+
+Combines mount/share checks and UNIX storage/SMART checks with Synology-style master/agent peer APIs.
+
+- Docs: `addons/unix-monitor/README.md`
+- Installer:
+
+```bash
+curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-monitor/install.sh | bash
+```
+
 ## Notes
 
 - Addons are standalone tools.

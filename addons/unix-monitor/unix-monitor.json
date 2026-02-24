@@ -1,0 +1,17 @@
+{
+  "instance_id": "bb7aa093d9c24d4b95dc273b1c5cdcf8",
+  "instance_name": "MAC-11.gsi.local, gsi.li, gsi-services.ch",
+  "monitors": [],
+  "debug": false,
+  "cron_enabled": false,
+  "cron_interval_minutes": 5,
+  "peer_role": "standalone",
+  "peer_master_url": "",
+  "peering_token": "",
+  "peer_port": 8787,
+  "web_enabled": true,
+  "ui_host": "0.0.0.0",
+  "ui_port": 8787,
+  "scheduler_backend": "systemd",
+  "agent_only_notice_ack": false
+}

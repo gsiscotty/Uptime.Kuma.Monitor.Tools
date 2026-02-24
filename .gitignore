@@ -114,3 +114,6 @@ temp/
 # Synology package build artifacts (generated)
 addons/synology-monitor/community-package/.build/
 addons/synology-monitor/community-package/dist/
+
+# Security documentation artifacts (local-only)
+addons/synology-monitor/security-docs/
