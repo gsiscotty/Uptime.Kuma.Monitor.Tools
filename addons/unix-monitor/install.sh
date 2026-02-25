@@ -7,6 +7,9 @@ BRANCH="main"
 SCRIPT_NAME="unix-monitor.py"
 SCRIPT_REMOTE_PATH="addons/unix-monitor/${SCRIPT_NAME}"
 SCRIPT_RAW_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${SCRIPT_REMOTE_PATH}"
+UNINSTALL_NAME="uninstall.sh"
+UNINSTALL_REMOTE_PATH="addons/unix-monitor/${UNINSTALL_NAME}"
+UNINSTALL_RAW_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${UNINSTALL_REMOTE_PATH}"
 DEFAULT_INSTALL_DIR="/opt/unix-monitor"
 MIN_PYTHON_MAJOR=3
 MIN_PYTHON_MINOR=8
@@ -140,6 +143,7 @@ if [ ! -w "${INSTALL_DIR}" ]; then
 fi
 
 TARGET="${INSTALL_DIR}/${SCRIPT_NAME}"
+UNINSTALL_TARGET="${INSTALL_DIR}/${UNINSTALL_NAME}"
 
 info "Downloading ${SCRIPT_NAME}..."
 if [ "${DOWNLOADER}" = "curl" ]; then
@@ -148,17 +152,30 @@ else
     wget -qO "${TARGET}" "${SCRIPT_RAW_URL}"
 fi
 
-if [ ! -s "${TARGET}" ]; then
+info "Downloading ${UNINSTALL_NAME}..."
+if [ "${DOWNLOADER}" = "curl" ]; then
+    curl -fsSL "${UNINSTALL_RAW_URL}" -o "${UNINSTALL_TARGET}"
+else
+    wget -qO "${UNINSTALL_TARGET}" "${UNINSTALL_RAW_URL}"
+fi
+
+if [ ! -s "${TARGET}" ] || [ ! -s "${UNINSTALL_TARGET}" ]; then
     err "Download failed."
     exit 1
 fi
 FIRST_LINE="$(sed -n '1p' "${TARGET}")"
 if [[ "${FIRST_LINE}" != "#!/usr/bin/env python3"* ]]; then
     err "Downloaded launcher is not the expected script."
-    rm -f "${TARGET}"
+    rm -f "${TARGET}" "${UNINSTALL_TARGET}"
     exit 1
 fi
-chmod 700 "${TARGET}"
+UNINSTALL_FIRST_LINE="$(sed -n '1p' "${UNINSTALL_TARGET}")"
+if [[ "${UNINSTALL_FIRST_LINE}" != "#!/bin/bash"* ]]; then
+    err "Downloaded uninstaller is not the expected script."
+    rm -f "${TARGET}" "${UNINSTALL_TARGET}"
+    exit 1
+fi
+chmod 700 "${TARGET}" "${UNINSTALL_TARGET}"
 info "Installed to ${INSTALL_DIR}"
 
 echo -e "Install smartctl dependency (smartmontools)? (Y/n): \c"
@@ -412,4 +429,5 @@ fi
 echo ""
 echo "Scheduler backend: ${SCHED_BACKEND}"
 echo "Manual one-shot check: python3 ${TARGET} --run-scheduled"
+echo "Uninstall later: sudo ${UNINSTALL_TARGET}"
 echo "------------------------------------------------------"

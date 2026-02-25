@@ -18,6 +18,11 @@ Runtime name is generated from system info:
 curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-monitor/install.sh | bash
 ```
 
+## Architecture
+
+- Architecture document: `addons/unix-monitor/ARCHITECTURE.md`
+- Diagram image: `addons/unix-monitor/unix-monitor-architecture.png`
+
 ## Setup Modes
 
 ### Webserver mode
@@ -54,6 +59,14 @@ python3 unix-monitor.py --run-scheduled-loop
 python3 unix-monitor.py --run-smart-helper
 python3 unix-monitor.py --run-backup-helper
 python3 unix-monitor.py --run-system-log-helper
+```
+
+## Uninstall
+
+The installer downloads an uninstaller into the install directory:
+
+```bash
+sudo /opt/unix-monitor/uninstall.sh
 ```
 
 ## Dependencies

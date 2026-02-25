@@ -1379,16 +1379,16 @@ def _peer_create_remote_monitor(cfg: Dict[str, Any], peer_id: str,
 
 
 def get_smart_cache_path() -> Path:
-    return get_runtime_data_dir() / "synology-smart-cache.json"
+    return get_runtime_data_dir() / "unix-smart-cache.json"
 
 
 def get_system_log_cache_path() -> Path:
-    return get_runtime_data_dir() / "synology-system-log-cache.json"
+    return get_runtime_data_dir() / "unix-system-log-cache.json"
 
 
 def _write_smart_cache(payload: Dict[str, Any]) -> None:
     path = get_smart_cache_path()
-    tmp = path.parent / ".synology-smart-cache.json.tmp"
+    tmp = path.parent / ".unix-smart-cache.json.tmp"
     try:
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -1401,7 +1401,7 @@ def _write_smart_cache(payload: Dict[str, Any]) -> None:
 
 def _write_system_log_cache(payload: Dict[str, Any]) -> None:
     path = get_system_log_cache_path()
-    tmp = path.parent / ".synology-system-log-cache.json.tmp"
+    tmp = path.parent / ".unix-system-log-cache.json.tmp"
     try:
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -1435,12 +1435,12 @@ def _read_system_log_cache() -> Optional[Dict[str, Any]]:
 
 
 def get_backup_cache_path() -> Path:
-    return get_runtime_data_dir() / "synology-backup-cache.json"
+    return get_runtime_data_dir() / "unix-backup-cache.json"
 
 
 def _write_backup_cache(payload: Dict[str, Any]) -> None:
     path = get_backup_cache_path()
-    tmp = path.parent / ".synology-backup-cache.json.tmp"
+    tmp = path.parent / ".unix-backup-cache.json.tmp"
     try:
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -1481,12 +1481,12 @@ def get_task_guide_images() -> Dict[str, Path]:
 
 
 def get_task_status_path() -> Path:
-    return get_runtime_data_dir() / "synology-task-status.json"
+    return get_runtime_data_dir() / "unix-task-status.json"
 
 
 def _write_task_status(payload: Dict[str, Any]) -> None:
     path = get_task_status_path()
-    tmp = path.parent / ".synology-task-status.json.tmp"
+    tmp = path.parent / ".unix-task-status.json.tmp"
     try:
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -1529,7 +1529,7 @@ def get_monitor_state_path() -> Path:
 
 
 def get_schedule_state_path() -> Path:
-    return get_runtime_data_dir() / "synology-schedule-state.json"
+    return get_runtime_data_dir() / "unix-schedule-state.json"
 
 
 def _load_monitor_state() -> Dict[str, Dict[str, Any]]:
@@ -1596,7 +1596,7 @@ def _touch_scheduled_run(monitor_name: str = "") -> None:
     state["last_run_ts"] = now
     if monitor_name:
         state.setdefault("per_monitor", {})[monitor_name] = now
-    tmp = p.parent / ".synology-schedule-state.json.tmp"
+    tmp = p.parent / ".unix-schedule-state.json.tmp"
     try:
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -1620,11 +1620,11 @@ def _read_schedule_state() -> Dict[str, Any]:
 
 
 def _scheduler_pid_path() -> Path:
-    return Path("/var/packages/unix-monitor/target/scheduler.pid")
+    return Path("/var/lib/unix-monitor/scheduler.pid")
 
 
 def _scheduler_service_path() -> Path:
-    return Path("/var/packages/unix-monitor/scripts/start-stop-status")
+    return Path("/usr/local/bin/unix-monitor-service")
 
 
 def _scheduler_status_text(cfg: Dict[str, Any]) -> str:
@@ -1818,9 +1818,9 @@ def _build_task_diag_text(cfg: Dict[str, Any]) -> str:
     auto_task = _read_task_status()
     auto_task_text = json.dumps(auto_task, indent=2) if auto_task else "No auto-create task attempts recorded."
 
-    helper_log = Path("/var/packages/unix-monitor/target/smart-helper.log")
-    backup_helper_log = Path("/var/packages/unix-monitor/target/backup-helper.log")
-    sched_log = Path("/var/packages/unix-monitor/target/monitor-scheduler.log")
+    helper_log = Path("/var/lib/unix-monitor/smart-helper.log")
+    backup_helper_log = Path("/var/lib/unix-monitor/backup-helper.log")
+    sched_log = Path("/var/lib/unix-monitor/monitor-scheduler.log")
 
     backup_cache = _read_backup_cache() or {}
     backup_checked = int(backup_cache.get("checked_at", 0) or 0)
@@ -1864,9 +1864,9 @@ def _build_task_diag_text(cfg: Dict[str, Any]) -> str:
 
 def _build_system_diag_text() -> str:
     ui_log = _tail_text_file(get_ui_log_path(), max_lines=200)
-    helper_log = _tail_text_file(Path("/var/packages/unix-monitor/target/smart-helper.log"), max_lines=160)
-    backup_helper_log_text = _tail_text_file(Path("/var/packages/unix-monitor/target/backup-helper.log"), max_lines=100)
-    sched_log = _tail_text_file(Path("/var/packages/unix-monitor/target/monitor-scheduler.log"), max_lines=160)
+    helper_log = _tail_text_file(Path("/var/lib/unix-monitor/smart-helper.log"), max_lines=160)
+    backup_helper_log_text = _tail_text_file(Path("/var/lib/unix-monitor/backup-helper.log"), max_lines=100)
+    sched_log = _tail_text_file(Path("/var/lib/unix-monitor/monitor-scheduler.log"), max_lines=160)
     sys_cache = _read_system_log_cache() or {}
     cache_checked = int(sys_cache.get("checked_at", 0) or 0)
     cache_checked_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cache_checked)) if cache_checked else "never"
@@ -5901,7 +5901,7 @@ def _ui_repair_automation() -> str:
 
     # Best-effort user-level crontab fallback.
     helper = str(get_smart_helper_script_path())
-    sched = "/var/packages/unix-monitor/target/monitor-scheduler.sh"
+    sched = "/usr/local/bin/unix-monitor-scheduler.sh"
     for line in (
         f"*/5 * * * * {helper} # unix-monitor smart helper auto",
         f"* * * * * {sched} # unix-monitor scheduled checks auto",
@@ -7402,7 +7402,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     ))
                     return
                 if self.path == "/danger-restart":
-                    service_script = "/var/packages/unix-monitor/scripts/start-stop-status"
+                    service_script = "/usr/local/bin/unix-monitor-service"
                     cmd = f'(sleep 1; "{service_script}" stop; sleep 1; "{service_script}" start) >/dev/null 2>&1'
                     try:
                         subprocess.Popen(["sh", "-c", cmd])
