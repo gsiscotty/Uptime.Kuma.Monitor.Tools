@@ -40,7 +40,7 @@ curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/m
 
 ### 4) Unix Monitor
 
-Combines mount/share checks and UNIX storage/SMART checks with Synology-style master/agent peer APIs.
+Provides Synology-parity runtime complexity on Unix (auth UI, helper/scheduler model, peering APIs), plus mount and UNIX storage/SMART checks.
 
 - Docs: `addons/unix-monitor/README.md`
 - Installer:

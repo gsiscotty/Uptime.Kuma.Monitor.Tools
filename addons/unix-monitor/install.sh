@@ -14,6 +14,12 @@ MIN_PYTHON_MINOR=8
 SYSTEMD_SERVICE_UI="unix-monitor-ui.service"
 SYSTEMD_SERVICE_SCHED="unix-monitor-scheduler.service"
 SYSTEMD_TIMER_SCHED="unix-monitor-scheduler.timer"
+SYSTEMD_SERVICE_SMART_HELPER="unix-monitor-smart-helper.service"
+SYSTEMD_TIMER_SMART_HELPER="unix-monitor-smart-helper.timer"
+SYSTEMD_SERVICE_BACKUP_HELPER="unix-monitor-backup-helper.service"
+SYSTEMD_TIMER_BACKUP_HELPER="unix-monitor-backup-helper.timer"
+SYSTEMD_SERVICE_SYSLOG_HELPER="unix-monitor-system-log-helper.service"
+SYSTEMD_TIMER_SYSLOG_HELPER="unix-monitor-system-log-helper.timer"
 
 read_input() {
     read -r "$@" </dev/tty
@@ -58,6 +64,15 @@ install_smartmontools() {
     else
         return 1
     fi
+}
+
+install_python_deps() {
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -m pip install --upgrade pip >/dev/null 2>&1 || true
+        python3 -m pip install pyotp qrcode pillow werkzeug cryptography >/dev/null 2>&1 || return 1
+        return 0
+    fi
+    return 1
 }
 
 echo ""
@@ -156,6 +171,17 @@ if [[ ! "${INSTALL_SMART:-Y}" =~ ^[Nn]$ ]]; then
     fi
 fi
 
+echo -e "Install Python UI/auth dependencies (pyotp, qrcode, pillow, werkzeug, cryptography)? (Y/n): \c"
+read_input INSTALL_PY_DEPS || true
+if [[ ! "${INSTALL_PY_DEPS:-Y}" =~ ^[Nn]$ ]]; then
+    if install_python_deps; then
+        info "Python dependencies installed."
+    else
+        warn "Could not install all Python dependencies automatically."
+        warn "Install manually: python3 -m pip install pyotp qrcode pillow werkzeug cryptography"
+    fi
+fi
+
 echo ""
 echo -e "${BOLD}Setup choice:${NC}"
 echo "  1) Webserver mode (UI + local management, master/agent capable)"
@@ -224,6 +250,12 @@ if [ "${SCHED_BACKEND}" = "systemd" ] && command -v systemctl >/dev/null 2>&1; t
     UI_UNIT_PATH="/etc/systemd/system/${SYSTEMD_SERVICE_UI}"
     SCHED_UNIT_PATH="/etc/systemd/system/${SYSTEMD_SERVICE_SCHED}"
     TIMER_PATH="/etc/systemd/system/${SYSTEMD_TIMER_SCHED}"
+    SMART_HELPER_SERVICE_PATH="/etc/systemd/system/${SYSTEMD_SERVICE_SMART_HELPER}"
+    SMART_HELPER_TIMER_PATH="/etc/systemd/system/${SYSTEMD_TIMER_SMART_HELPER}"
+    BACKUP_HELPER_SERVICE_PATH="/etc/systemd/system/${SYSTEMD_SERVICE_BACKUP_HELPER}"
+    BACKUP_HELPER_TIMER_PATH="/etc/systemd/system/${SYSTEMD_TIMER_BACKUP_HELPER}"
+    SYSLOG_HELPER_SERVICE_PATH="/etc/systemd/system/${SYSTEMD_SERVICE_SYSLOG_HELPER}"
+    SYSLOG_HELPER_TIMER_PATH="/etc/systemd/system/${SYSTEMD_TIMER_SYSLOG_HELPER}"
 
     if [ "${WEB_ENABLED}" = "true" ]; then
         sudo tee "${UI_UNIT_PATH}" >/dev/null <<EOF
@@ -256,6 +288,84 @@ WorkingDirectory=${INSTALL_DIR}
 ExecStart=$(command -v python3) ${TARGET} --run-scheduled
 EOF
 
+    sudo tee "${SMART_HELPER_SERVICE_PATH}" >/dev/null <<EOF
+[Unit]
+Description=${APP_LABEL} SMART Helper Cache Refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=$(command -v python3) ${TARGET} --run-smart-helper
+EOF
+
+    sudo tee "${SMART_HELPER_TIMER_PATH}" >/dev/null <<EOF
+[Unit]
+Description=Run ${APP_LABEL} SMART helper every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    sudo tee "${BACKUP_HELPER_SERVICE_PATH}" >/dev/null <<EOF
+[Unit]
+Description=${APP_LABEL} Backup Helper Cache Refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=$(command -v python3) ${TARGET} --run-backup-helper
+EOF
+
+    sudo tee "${BACKUP_HELPER_TIMER_PATH}" >/dev/null <<EOF
+[Unit]
+Description=Run ${APP_LABEL} backup helper every 5 minutes
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    sudo tee "${SYSLOG_HELPER_SERVICE_PATH}" >/dev/null <<EOF
+[Unit]
+Description=${APP_LABEL} System Log Helper Cache Refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=${INSTALL_DIR}
+ExecStart=$(command -v python3) ${TARGET} --run-system-log-helper
+EOF
+
+    sudo tee "${SYSLOG_HELPER_TIMER_PATH}" >/dev/null <<EOF
+[Unit]
+Description=Run ${APP_LABEL} system-log helper every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
     sudo tee "${TIMER_PATH}" >/dev/null <<EOF
 [Unit]
 Description=Run ${APP_LABEL} checks every 5 minutes
@@ -275,6 +385,9 @@ EOF
         sudo systemctl enable --now "${SYSTEMD_SERVICE_UI}"
     fi
     sudo systemctl enable --now "${SYSTEMD_TIMER_SCHED}"
+    sudo systemctl enable --now "${SYSTEMD_TIMER_SMART_HELPER}"
+    sudo systemctl enable --now "${SYSTEMD_TIMER_BACKUP_HELPER}"
+    sudo systemctl enable --now "${SYSTEMD_TIMER_SYSLOG_HELPER}"
     info "systemd services enabled."
 elif [ "${SCHED_BACKEND}" = "cron" ]; then
     info "Config set to cron fallback. Enable cron schedule from script menu."
