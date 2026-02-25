@@ -33,6 +33,11 @@ Installer responsibilities:
 | `unix-monitor-backup-helper.timer` + service | Backup helper cache refresh | `--run-backup-helper` |
 | `unix-monitor-system-log-helper.timer` + service | System-log helper cache refresh | `--run-system-log-helper` |
 
+Notes:
+
+- `unix-monitor-scheduler.service` is intentionally `Type=oneshot` (no long-running PID).
+- Scheduler interval is installer-configurable (`cron_interval_minutes`), defaulting to 1 minute for systemd mode.
+
 ## 2. Root Helpers (5-minute cadence)
 
 Three helper entry points collect privileged data for non-root checks:
@@ -46,6 +51,12 @@ Cache age target is 20 minutes. Stale cache state can degrade monitor status to 
 ## 3. Monitor Checks (scheduler execution)
 
 `run_scheduled()` iterates configured monitors and executes by `check_mode`.
+
+Scheduler execution behavior:
+
+- logs `scheduled-run | start` and `scheduled-run | done` with due/attempted counters
+- isolates monitor failures (one monitor error does not stop the whole pass)
+- records per-monitor schedule timestamps even when push fails, so UI timing stays accurate
 
 | Mode | Function | Behavior |
 |------|----------|----------|
@@ -73,6 +84,12 @@ GET {base_url}?status={status}&msg={message}&ping={latency_ms}
 
 `warning` is normalized for Kuma compatibility where needed, while warning details remain in `msg`.
 
+Message source logic:
+
+- local Unix monitors send `Unix check (...)`
+- Synology-origin monitors (via peering metadata) keep `Synology check (...)`
+- backup fallback guidance text is source-aware (Unix helper instructions vs DSM task scheduler wording)
+
 ## 4. Web UI Layer
 
 The UI runs on `ThreadingHTTPServer` (default port `8787`), with optional TLS where cert material exists.
@@ -97,6 +114,12 @@ The UI runs on `ThreadingHTTPServer` (default port `8787`), with optional TLS wh
 
 Includes logs, task state, config snapshot, cache state, history, file-path/system info surfaces.
 
+Automation diagnostics include backend-aware details:
+
+- `systemd` mode shows timer state (`active/substate`), next/last trigger, and explains oneshot semantics
+- `cron` mode shows process/PID style status and relevant crontab entries
+- both modes expose active config/runtime paths to catch path-split issues quickly
+
 ## 5. Peering (Standalone / Master / Agent)
 
 Roles:
@@ -119,6 +142,8 @@ Typical flow:
 1. Agent configured with master URL + peering token.
 2. Agent pushes snapshots after scheduled checks.
 3. Master stores peer snapshots and can request/create remote monitors.
+
+Snapshot metadata includes platform hints (`platform`, `platform_family`) so master-side behavior can preserve source-specific message wording.
 
 ## 6. Data Stores
 
@@ -161,3 +186,10 @@ All via `python3 unix-monitor.py <flag>`:
 | `--agent-menu` | Force agent-only menu mode gate |
 | `--help` / `-h` | Show CLI usage |
 | *(none)* | Interactive menu |
+
+## 8. Automation Repair Strategy
+
+`Repair automation` is backend-aware:
+
+- **systemd backend**: enables/starts unix-monitor timers/services via `systemctl` (no cron fallback injection)
+- **cron backend**: installs deterministic cron entries using the active script path and configured interval

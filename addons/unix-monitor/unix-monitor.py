@@ -1743,8 +1743,9 @@ def _scheduler_status_text(cfg: Dict[str, Any]) -> str:
                 f"{'active' if timer_running else 'inactive'} "
                 f"(state={t.get('active_state')}/{t.get('sub_state')}, unit={t.get('unit_file_state')})"
             ),
+            "Scheduler service mode: systemd oneshot (no persistent PID expected)",
             f"Automatic checks enabled (global): {'yes' if cron_enabled else 'no'}",
-            f"Global fallback interval: {interval} minute(s)",
+            f"Configured scheduler interval: {interval} minute(s)",
             f"Timer next trigger: {t.get('next', 'n/a')}",
             f"Timer last trigger: {t.get('last', 'n/a')}",
             f"Last scheduled run (state file): {last_text}",
@@ -1773,7 +1774,7 @@ def _scheduler_status_text(cfg: Dict[str, Any]) -> str:
             f"Scheduler backend: {backend}",
             f"Scheduler process: {'running' if running else 'not running'} (pid={pid_text})",
             f"Automatic checks enabled (global): {'yes' if cron_enabled else 'no'}",
-            f"Global fallback interval: {interval} minute(s)",
+            f"Configured scheduler interval: {interval} minute(s)",
             f"Last scheduled run: {last_text}",
             f"SMART elevated cache: {'active' if helper_ok else 'inactive'} | {helper_msg}",
             f"Config file: {cfg_path}",
@@ -1922,6 +1923,7 @@ def _build_task_diag_text(cfg: Dict[str, Any]) -> str:
         timer_diag = (
             f"- scheduler timer: {'active' if running else 'inactive'} "
             f"(state={t.get('active_state')}/{t.get('sub_state')}, unit={t.get('unit_file_state')})\n"
+            "- scheduler service mode: systemd oneshot (no persistent PID expected)\n"
             f"- timer next trigger: {t.get('next', 'n/a')}\n"
             f"- timer last trigger: {t.get('last', 'n/a')}\n"
         )
@@ -1987,7 +1989,7 @@ def _build_task_diag_text(cfg: Dict[str, Any]) -> str:
         "Automation Overview\n"
         f"- scheduler backend: {backend}\n"
         f"- automatic checks enabled (global): {'yes' if cron_enabled else 'no'}\n"
-        f"- global fallback interval: {interval} minute(s)\n"
+        f"- configured scheduler interval: {interval} minute(s)\n"
         f"{scheduler_line}"
         f"- last scheduled run: {last_sched_text}\n"
         f"\nPer-monitor schedule:\n{per_mon_text}\n"
@@ -6062,7 +6064,11 @@ def _ui_run_scheduled_now() -> str:
 
 
 def _ui_repair_automation() -> str:
+    cfg = load_config()
     details: List[str] = []
+    backend = str(cfg.get("scheduler_backend", "cron")).strip().lower()
+    if backend not in ("systemd", "cron"):
+        backend = "cron"
     service_script = _scheduler_service_path()
     if service_script.exists():
         rc, out = _run_cmd([str(service_script), "start"], timeout_sec=12)
@@ -6072,25 +6078,43 @@ def _ui_repair_automation() -> str:
     else:
         details.append(f"service script missing: {service_script}")
 
-    # Best-effort user-level crontab fallback.
-    helper = str(get_smart_helper_script_path())
-    sched = "/usr/local/bin/unix-monitor-scheduler.sh"
-    for line in (
-        f"*/5 * * * * {helper} # unix-monitor smart helper auto",
-        f"* * * * * {sched} # unix-monitor scheduled checks auto",
-    ):
-        rc, out = _run_cmd(["crontab", "-l"], timeout_sec=8)
-        current = out if rc == 0 else ""
-        if line not in current:
-            new_cron = (current.rstrip() + "\n" + line + "\n").lstrip("\n")
-            try:
-                p = subprocess.Popen(["crontab", "-"], stdin=subprocess.PIPE, text=True)
-                p.communicate(new_cron)
-                details.append(f"crontab install {'ok' if p.returncode == 0 else 'failed'} for: {line}")
-            except OSError as e:
-                details.append(f"crontab error for {line}: {type(e).__name__}: {e}")
+    if backend == "systemd":
+        if not Path("/run/systemd/system").exists():
+            details.append("systemd backend selected but systemd runtime not detected.")
         else:
-            details.append(f"crontab already has: {line}")
+            for unit in (
+                "unix-monitor-scheduler.timer",
+                "unix-monitor-smart-helper.timer",
+                "unix-monitor-backup-helper.timer",
+                "unix-monitor-system-log-helper.timer",
+            ):
+                rc, out = _run_cmd(["systemctl", "enable", "--now", unit], timeout_sec=15)
+                details.append(f"{unit}: {'ok' if rc == 0 else f'failed rc={rc}'}")
+                if rc != 0 and out.strip():
+                    details.append(out.strip().replace("\n", " ")[:240])
+            rc, out = _run_cmd(["systemctl", "start", "unix-monitor-scheduler.service"], timeout_sec=20)
+            details.append(f"unix-monitor-scheduler.service start: {'ok' if rc == 0 else f'failed rc={rc}'}")
+            if rc != 0 and out.strip():
+                details.append(out.strip().replace("\n", " ")[:240])
+    else:
+        # Cron backend: install deterministic entries based on the active script path.
+        helper = str(get_smart_helper_script_path())
+        interval = int(cfg.get("cron_interval_minutes", 60) or 60)
+        sched_line = build_cron_line(get_script_path(), interval)
+        helper_line = f"*/5 * * * * {helper} # unix-monitor smart helper auto"
+        for line in (helper_line, sched_line):
+            rc, out = _run_cmd(["crontab", "-l"], timeout_sec=8)
+            current = out if rc == 0 else ""
+            if line not in current:
+                new_cron = (current.rstrip() + "\n" + line + "\n").lstrip("\n")
+                try:
+                    p = subprocess.Popen(["crontab", "-"], stdin=subprocess.PIPE, text=True)
+                    p.communicate(new_cron)
+                    details.append(f"crontab install {'ok' if p.returncode == 0 else 'failed'} for: {line}")
+                except OSError as e:
+                    details.append(f"crontab error for {line}: {type(e).__name__}: {e}")
+            else:
+                details.append(f"crontab already has: {line}")
 
     append_ui_log("automation | repair | " + " | ".join(details))
     return "\n".join(details)
