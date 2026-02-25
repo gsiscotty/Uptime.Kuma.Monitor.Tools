@@ -4506,7 +4506,7 @@ def _render_setup_html(
         </div>
       </div>
       <div class="card">
-        <h3>Setup All Monitors</h3>
+        <h3>Monitor Setup</h3>
         <div class="button-row">{setup_header_action}</div>
         <div class="muted">Create, edit, and delete monitors from this view.</div>
         <button onclick="openModal('/open-create', this)" style="margin-top:10px;">Create monitor</button>
@@ -4605,7 +4605,8 @@ def _render_setup_html(
       --bg: #0b1220; --card: #121d2f; --card-soft: #17243a; --border: #2a3d5a; --text: #d7e2f0; --muted: #8fa1b8;
       --blue: #2f80ed; --green: #22c55e; --yellow: #f59e0b; --red: #ef4444; --unknown: #64748b;
     }}
-    body {{ font-family: "Inter","Segoe UI",-apple-system,BlinkMacSystemFont,Arial,sans-serif; margin: 12px; background: radial-gradient(circle at 20% 0%, #1e4679 0%, var(--bg) 40%, #070b14 100%); color: var(--text); }}
+    html {{ min-height: 100%; background: radial-gradient(circle at 20% 0%, #1e4679 0%, var(--bg) 40%, #070b14 100%); }}
+    body {{ font-family: "Inter","Segoe UI",-apple-system,BlinkMacSystemFont,Arial,sans-serif; margin: 12px; min-height: calc(100vh - 24px); background: radial-gradient(circle at 20% 0%, #1e4679 0%, var(--bg) 40%, #070b14 100%); background-repeat: no-repeat; background-attachment: fixed; color: var(--text); }}
     .container {{ width: 100%; max-width: 1360px; margin: 0 auto; }}
     .layout {{ display: grid; grid-template-columns: 2.1fr 1fr; gap: 12px; }}
     .main-col, .side-col {{ min-width: 0; }}

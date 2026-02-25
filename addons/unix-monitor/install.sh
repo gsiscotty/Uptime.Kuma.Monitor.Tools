@@ -215,6 +215,38 @@ else:
 PY
 }
 
+json_set_number() {
+    local file="$1"
+    local key="$2"
+    local value="$3"
+    python3 - <<'PY' "${file}" "${key}" "${value}"
+import json, sys
+path, key, value = sys.argv[1], sys.argv[2], int(sys.argv[3])
+with open(path, encoding='utf-8') as f:
+    data = json.load(f)
+data[key] = value
+with open(path, 'w', encoding='utf-8') as f:
+    json.dump(data, f, indent=2)
+PY
+}
+
+normalize_interval() {
+    local raw="${1:-}"
+    if ! [[ "${raw}" =~ ^[0-9]+$ ]]; then
+        echo "1"
+        return
+    fi
+    if [ "${raw}" -lt 1 ]; then
+        echo "1"
+        return
+    fi
+    if [ "${raw}" -gt 1440 ]; then
+        echo "1440"
+        return
+    fi
+    echo "${raw}"
+}
+
 echo ""
 echo -e "${BOLD}${APP_LABEL} — Installer${NC}"
 echo "mount + unix storage checks + peer master/agent mode"
@@ -394,6 +426,8 @@ PEER_ROLE="standalone"
 MASTER_URL=""
 PEER_TOKEN=""
 SCHED_BACKEND="systemd"
+SCHED_INTERVAL_MIN="1"
+UPDATE_INTERVAL_ONLY=0
 
 if [ "${REINSTALL_MODE}" = "preserve" ] && [ -f "${CONFIG_PATH}" ]; then
     info "Preserving existing unix-monitor user data and configuration."
@@ -402,8 +436,15 @@ if [ "${REINSTALL_MODE}" = "preserve" ] && [ -f "${CONFIG_PATH}" ]; then
     MASTER_URL="$(json_get "${CONFIG_PATH}" "peer_master_url" "")"
     PEER_TOKEN="$(json_get "${CONFIG_PATH}" "peering_token" "")"
     SCHED_BACKEND="$(json_get "${CONFIG_PATH}" "scheduler_backend" "systemd")"
+    SCHED_INTERVAL_MIN="$(normalize_interval "$(json_get "${CONFIG_PATH}" "cron_interval_minutes" "5")")"
     if [ "${SCHED_BACKEND}" != "cron" ]; then
         SCHED_BACKEND="systemd"
+    fi
+    echo -e "Scheduler interval in minutes [${SCHED_INTERVAL_MIN}]: \c"
+    read_input KEEP_INTERVAL || true
+    if [ -n "${KEEP_INTERVAL:-}" ]; then
+        SCHED_INTERVAL_MIN="$(normalize_interval "${KEEP_INTERVAL}")"
+        UPDATE_INTERVAL_ONLY=1
     fi
 else
     echo "  1) Webserver mode (UI + local management, master/agent capable)"
@@ -438,6 +479,15 @@ else
     SCHED_CHOICE="${SCHED_CHOICE:-1}"
     if [ "${SCHED_CHOICE}" = "2" ]; then
         SCHED_BACKEND="cron"
+        SCHED_INTERVAL_MIN="5"
+    else
+        SCHED_BACKEND="systemd"
+        SCHED_INTERVAL_MIN="1"
+    fi
+    echo -e "Scheduler interval in minutes [${SCHED_INTERVAL_MIN}]: \c"
+    read_input SCHED_INTERVAL_INPUT || true
+    if [ -n "${SCHED_INTERVAL_INPUT:-}" ]; then
+        SCHED_INTERVAL_MIN="$(normalize_interval "${SCHED_INTERVAL_INPUT}")"
     fi
 
     cat > "${CONFIG_PATH}" <<EOF
@@ -446,7 +496,7 @@ else
   "monitors": [],
   "debug": false,
   "cron_enabled": false,
-  "cron_interval_minutes": 5,
+  "cron_interval_minutes": ${SCHED_INTERVAL_MIN},
   "peer_role": "${PEER_ROLE}",
   "peer_master_url": "${MASTER_URL}",
   "peering_token": "${PEER_TOKEN}",
@@ -460,6 +510,11 @@ else
 EOF
     chmod 600 "${CONFIG_PATH}"
     info "Created config: ${CONFIG_PATH}"
+fi
+
+if [ "${UPDATE_INTERVAL_ONLY}" -eq 1 ] && [ -f "${CONFIG_PATH}" ]; then
+    json_set_number "${CONFIG_PATH}" "cron_interval_minutes" "${SCHED_INTERVAL_MIN}"
+    info "Updated preserved scheduler interval: ${SCHED_INTERVAL_MIN} minute(s)"
 fi
 
 if [ "${SCHED_BACKEND}" = "systemd" ] && command -v systemctl >/dev/null 2>&1; then
@@ -585,11 +640,11 @@ EOF
 
     sudo tee "${TIMER_PATH}" >/dev/null <<EOF
 [Unit]
-Description=Run ${APP_LABEL} checks every 5 minutes
+Description=Run ${APP_LABEL} checks every ${SCHED_INTERVAL_MIN} minute(s)
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=5min
+OnUnitActiveSec=${SCHED_INTERVAL_MIN}min
 AccuracySec=30s
 Persistent=true
 
@@ -628,6 +683,7 @@ else
 fi
 echo ""
 echo "Scheduler backend: ${SCHED_BACKEND}"
+echo "Scheduler interval: ${SCHED_INTERVAL_MIN} minute(s)"
 echo "Manual one-shot check: python3 ${TARGET} --run-scheduled"
 echo "Uninstall later: sudo ${UNINSTALL_TARGET}"
 echo "------------------------------------------------------"

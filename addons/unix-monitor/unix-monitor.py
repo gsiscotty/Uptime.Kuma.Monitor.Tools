@@ -40,6 +40,7 @@ import sys
 import threading
 import time
 import platform
+import warnings
 from io import BytesIO
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -47,7 +48,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, quote, urlparse
 try:
-    import cgi  # type: ignore[import-not-found]
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=DeprecationWarning, module="cgi")
+        import cgi  # type: ignore[import-not-found]
 except Exception:
     cgi = None
 try:
@@ -1627,37 +1630,102 @@ def _scheduler_service_path() -> Path:
     return Path("/usr/local/bin/unix-monitor-service")
 
 
+def _systemd_show_properties(unit: str, props: List[str]) -> Dict[str, str]:
+    if not unit or not props:
+        return {}
+    cmd = ["systemctl", "show", unit, "--no-pager"]
+    for prop in props:
+        cmd.extend(["-p", prop])
+    rc, out = _run_cmd(cmd, timeout_sec=8)
+    if rc != 0:
+        return {}
+    data: Dict[str, str] = {}
+    for ln in (out or "").splitlines():
+        if "=" not in ln:
+            continue
+        k, v = ln.split("=", 1)
+        if k and k not in data:
+            data[k] = v.strip()
+    return data
+
+
+def _systemd_timer_status(timer_unit: str) -> Dict[str, str]:
+    keys = ["LoadState", "ActiveState", "SubState", "NextElapseUSecRealtime", "LastTriggerUSec", "UnitFileState"]
+    data = _systemd_show_properties(timer_unit, keys)
+    if not data:
+        return {
+            "load_state": "unknown",
+            "active_state": "unknown",
+            "sub_state": "unknown",
+            "next": "n/a",
+            "last": "n/a",
+            "unit_file_state": "unknown",
+        }
+    return {
+        "load_state": data.get("LoadState", "unknown"),
+        "active_state": data.get("ActiveState", "unknown"),
+        "sub_state": data.get("SubState", "unknown"),
+        "next": data.get("NextElapseUSecRealtime", "n/a"),
+        "last": data.get("LastTriggerUSec", "n/a"),
+        "unit_file_state": data.get("UnitFileState", "unknown"),
+    }
+
+
 def _scheduler_status_text(cfg: Dict[str, Any]) -> str:
     interval = int(cfg.get("cron_interval_minutes", 60) or 60)
     cron_enabled = bool(cfg.get("cron_enabled", False))
-    pid_path = _scheduler_pid_path()
-    pid_text = "missing"
-    running = False
-    if pid_path.exists():
-        try:
-            pid = int(pid_path.read_text(encoding="utf-8", errors="ignore").strip() or "0")
-            pid_text = str(pid) if pid > 0 else "invalid"
-            if pid > 0:
-                try:
-                    os.kill(pid, 0)
-                    running = True
-                except OSError:
-                    running = False
-        except (OSError, ValueError):
-            pid_text = "invalid"
+    backend = str(cfg.get("scheduler_backend", "cron")).strip().lower()
+    if backend not in ("systemd", "cron"):
+        backend = "cron"
     state = _read_schedule_state()
     last_ts = int(state.get("last_run_ts", 0) or 0)
     last_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_ts)) if last_ts else "never"
     due_text = "yes" if _is_scheduled_due(interval) else "no"
     helper_ok, helper_msg = get_smart_helper_status()
-    lines = [
-        f"Scheduler process: {'running' if running else 'not running'} (pid={pid_text})",
-        f"Automatic checks enabled (global): {'yes' if cron_enabled else 'no'}",
-        f"Global fallback interval: {interval} minute(s)",
-        f"Last scheduled run: {last_text}",
-        f"SMART elevated cache: {'active' if helper_ok else 'inactive'} | {helper_msg}",
-        f"Scheduler service script: {_scheduler_service_path()}",
-    ]
+    lines: List[str]
+    if backend == "systemd":
+        t = _systemd_timer_status("unix-monitor-scheduler.timer")
+        timer_running = t.get("active_state") == "active"
+        lines = [
+            f"Scheduler backend: {backend}",
+            (
+                "Scheduler timer: "
+                f"{'active' if timer_running else 'inactive'} "
+                f"(state={t.get('active_state')}/{t.get('sub_state')}, unit={t.get('unit_file_state')})"
+            ),
+            f"Automatic checks enabled (global): {'yes' if cron_enabled else 'no'}",
+            f"Global fallback interval: {interval} minute(s)",
+            f"Timer next trigger: {t.get('next', 'n/a')}",
+            f"Timer last trigger: {t.get('last', 'n/a')}",
+            f"Last scheduled run (state file): {last_text}",
+            f"SMART elevated cache: {'active' if helper_ok else 'inactive'} | {helper_msg}",
+            f"Scheduler service script: {_scheduler_service_path()}",
+        ]
+    else:
+        pid_path = _scheduler_pid_path()
+        pid_text = "missing"
+        running = False
+        if pid_path.exists():
+            try:
+                pid = int(pid_path.read_text(encoding="utf-8", errors="ignore").strip() or "0")
+                pid_text = str(pid) if pid > 0 else "invalid"
+                if pid > 0:
+                    try:
+                        os.kill(pid, 0)
+                        running = True
+                    except OSError:
+                        running = False
+            except (OSError, ValueError):
+                pid_text = "invalid"
+        lines = [
+            f"Scheduler backend: {backend}",
+            f"Scheduler process: {'running' if running else 'not running'} (pid={pid_text})",
+            f"Automatic checks enabled (global): {'yes' if cron_enabled else 'no'}",
+            f"Global fallback interval: {interval} minute(s)",
+            f"Last scheduled run: {last_text}",
+            f"SMART elevated cache: {'active' if helper_ok else 'inactive'} | {helper_msg}",
+            f"Scheduler service script: {_scheduler_service_path()}",
+        ]
     per_mon = state.get("per_monitor", {})
     monitors = cfg.get("monitors", [])
     if monitors:
@@ -1784,36 +1852,52 @@ def _extract_error_lines(text: str, max_lines: int = 80) -> str:
 def _build_task_diag_text(cfg: Dict[str, Any]) -> str:
     interval = int(cfg.get("cron_interval_minutes", 60) or 60)
     cron_enabled = bool(cfg.get("cron_enabled", False))
+    backend = str(cfg.get("scheduler_backend", "cron")).strip().lower()
+    if backend not in ("systemd", "cron"):
+        backend = "cron"
     sched_state = _read_schedule_state()
     last_sched = int(sched_state.get("last_run_ts", 0) or 0)
     last_sched_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_sched)) if last_sched else "never"
 
-    pid_path = _scheduler_pid_path()
     pid_val = 0
     running = False
-    if pid_path.exists():
-        try:
-            pid_val = int(pid_path.read_text(encoding="utf-8", errors="ignore").strip() or "0")
-            if pid_val > 0:
-                try:
-                    os.kill(pid_val, 0)
-                    running = True
-                except OSError:
-                    running = False
-        except (OSError, ValueError):
-            pid_val = 0
+    timer_diag = ""
+    if backend == "systemd":
+        t = _systemd_timer_status("unix-monitor-scheduler.timer")
+        running = t.get("active_state") == "active"
+        timer_diag = (
+            f"- scheduler timer: {'active' if running else 'inactive'} "
+            f"(state={t.get('active_state')}/{t.get('sub_state')}, unit={t.get('unit_file_state')})\n"
+            f"- timer next trigger: {t.get('next', 'n/a')}\n"
+            f"- timer last trigger: {t.get('last', 'n/a')}\n"
+        )
+    else:
+        pid_path = _scheduler_pid_path()
+        if pid_path.exists():
+            try:
+                pid_val = int(pid_path.read_text(encoding="utf-8", errors="ignore").strip() or "0")
+                if pid_val > 0:
+                    try:
+                        os.kill(pid_val, 0)
+                        running = True
+                    except OSError:
+                        running = False
+            except (OSError, ValueError):
+                pid_val = 0
 
     helper_ok, helper_msg = get_smart_helper_status()
     cache = _read_smart_cache() or {}
     helper_checked = int(cache.get("checked_at", 0) or 0)
     helper_checked_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(helper_checked)) if helper_checked else "never"
 
-    rc, out = _run_cmd(["crontab", "-l"], timeout_sec=8)
-    if rc == 0:
-        cron_lines = [ln for ln in out.splitlines() if "unix-monitor" in ln]
-        cron_text = "\n".join(cron_lines) if cron_lines else "(no unix-monitor crontab entries)"
-    else:
-        cron_text = f"(crontab unavailable rc={rc})"
+    cron_text = "(cron backend not selected)"
+    if backend == "cron":
+        rc, out = _run_cmd(["crontab", "-l"], timeout_sec=8)
+        if rc == 0:
+            cron_lines = [ln for ln in out.splitlines() if "unix-monitor" in ln]
+            cron_text = "\n".join(cron_lines) if cron_lines else "(no unix-monitor crontab entries)"
+        else:
+            cron_text = f"(crontab unavailable rc={rc})"
 
     auto_task = _read_task_status()
     auto_task_text = json.dumps(auto_task, indent=2) if auto_task else "No auto-create task attempts recorded."
@@ -1839,17 +1923,24 @@ def _build_task_diag_text(cfg: Dict[str, Any]) -> str:
         per_mon_lines.append(f"  {mn}: interval={mi}m, cron={'on' if mc else 'off'}, last_run={mlr_text}")
     per_mon_text = "\n".join(per_mon_lines) if per_mon_lines else "  (no monitors)"
 
+    scheduler_line = (
+        f"- scheduler process: {'running' if running else 'not running'} (pid={pid_val or 'n/a'})\n"
+        if backend == "cron"
+        else timer_diag
+    )
+
     return (
         "Automation Overview\n"
+        f"- scheduler backend: {backend}\n"
         f"- automatic checks enabled (global): {'yes' if cron_enabled else 'no'}\n"
         f"- global fallback interval: {interval} minute(s)\n"
-        f"- scheduler process: {'running' if running else 'not running'} (pid={pid_val or 'n/a'})\n"
+        f"{scheduler_line}"
         f"- last scheduled run: {last_sched_text}\n"
         f"\nPer-monitor schedule:\n{per_mon_text}\n"
         f"- SMART helper cache: {'active' if helper_ok else 'inactive'} (last: {helper_checked_text})\n"
         f"- SMART helper message: {helper_msg}\n"
         f"- Backup helper cache: last={backup_checked_text} overall={backup_overall}\n\n"
-        "Crontab entries (unix-monitor)\n"
+        "Crontab entries (unix-monitor; cron backend only)\n"
         f"{cron_text}\n\n"
         "Auto-create task status\n"
         f"{auto_task_text}\n\n"
@@ -4539,13 +4630,6 @@ def _render_setup_html(
     """
     setup_popup_card = setup_card.replace(f'<details class="card"{setup_open_attr}>', '<details class="card" open>')
 
-    first_start = (len(monitors) == 0 and len(history) == 0)
-    show_guide_button = (not elevated_ok) or first_start
-    setup_header_action = (
-        "<button onclick=\"openModal('/open-setup-popup',this)\">Elevation access guide</button>"
-        if show_guide_button
-        else ""
-    )
     popup_status_html = ""
     if show_setup_popup:
         if message:
@@ -4613,8 +4697,7 @@ def _render_setup_html(
         </div>
       </div>
       <div class="card">
-        <h3>Setup All Monitors</h3>
-        <div class="button-row">{setup_header_action}</div>
+        <h3>Monitor Setup</h3>
         <div class="muted">Create, edit, and delete monitors from this view.</div>
         <button onclick="openModal('/open-create', this)" style="margin-top:10px;">Create monitor</button>
       </div>
@@ -4712,7 +4795,8 @@ def _render_setup_html(
       --bg: #0b1220; --card: #121d2f; --card-soft: #17243a; --border: #2a3d5a; --text: #d7e2f0; --muted: #8fa1b8;
       --blue: #2f80ed; --green: #22c55e; --yellow: #f59e0b; --red: #ef4444; --unknown: #64748b;
     }}
-    body {{ font-family: "Inter","Segoe UI",-apple-system,BlinkMacSystemFont,Arial,sans-serif; margin: 12px; background: radial-gradient(circle at 20% 0%, #1e4679 0%, var(--bg) 40%, #070b14 100%); color: var(--text); }}
+    html {{ min-height: 100%; background: radial-gradient(circle at 20% 0%, #1e4679 0%, var(--bg) 40%, #070b14 100%); }}
+    body {{ font-family: "Inter","Segoe UI",-apple-system,BlinkMacSystemFont,Arial,sans-serif; margin: 12px; min-height: calc(100vh - 24px); background: radial-gradient(circle at 20% 0%, #1e4679 0%, var(--bg) 40%, #070b14 100%); background-repeat: no-repeat; background-attachment: fixed; color: var(--text); }}
     .container {{ width: 100%; max-width: 1360px; margin: 0 auto; }}
     .layout {{ display: grid; grid-template-columns: 2.1fr 1fr; gap: 12px; }}
     .main-col, .side-col {{ min-width: 0; }}
