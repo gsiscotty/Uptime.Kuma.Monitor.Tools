@@ -104,11 +104,11 @@ AUTH_CHALLENGE_TTL_SEC = 300
 AUTH_MAX_LOGIN_ATTEMPTS = 5
 AUTH_LOCKOUT_DURATION_SEC = 15 * 60
 SYSTEM_LABEL = (platform.uname().system or platform.system() or "Unix").strip()
-BRAND_NAME = SYSTEM_LABEL
+BRAND_NAME = "EasySystems GmbH"
 PRODUCT_NAME = f"{SYSTEM_LABEL} Kuma Monitor Addon"
-BRAND_URL = ""
-BRAND_LOGO_URL = ""
-BRAND_FAVICON_URL = ""
+BRAND_URL = "https://www.easysystems.ch/de"
+BRAND_LOGO_URL = "https://www.easysystems.ch/img/logo-blue.png"
+BRAND_FAVICON_URL = "https://www.easysystems.ch/Themes/essys_v2-v1_19-08-2025/favicon/android-icon-96x96.png"
 BRAND_AUTHOR = "Konrad von Burg"
 BRAND_COPYRIGHT = "Copyright (c) 2026"
 PRODUCT_DESC = (
@@ -5670,23 +5670,51 @@ def _render_auth_setup_page(
           <a class="btn" href="/auth/login">Continue to Login</a>
         </div>
         <script>
+        function copyText(text) {{
+          if (navigator.clipboard && window.isSecureContext) {{
+            return navigator.clipboard.writeText(text);
+          }}
+          return new Promise(function(resolve, reject) {{
+            try {{
+              var ta = document.createElement('textarea');
+              ta.value = text;
+              ta.setAttribute('readonly', '');
+              ta.style.position = 'fixed';
+              ta.style.opacity = '0';
+              ta.style.left = '-9999px';
+              document.body.appendChild(ta);
+              ta.focus();
+              ta.select();
+              var ok = document.execCommand('copy');
+              document.body.removeChild(ta);
+              if (ok) resolve();
+              else reject(new Error('copy command failed'));
+            }} catch (e) {{
+              reject(e);
+            }}
+          }});
+        }}
         function copyTotpSecret(btn) {{
           var el = document.getElementById('totp-secret');
           if (!el) return;
-          navigator.clipboard.writeText(el.textContent).then(function() {{
+          copyText(el.textContent || '').then(function() {{
             var t = btn.textContent;
             btn.textContent = 'Copied!';
             setTimeout(function() {{ btn.textContent = t; }}, 1500);
-          }}).catch(function() {{ alert('Failed to copy'); }});
+          }}).catch(function() {{
+            alert('Failed to copy. Please copy manually from the field.');
+          }});
         }}
         function copyRecoveryCodes(btn) {{
           var el = document.getElementById('recovery-codes');
           if (!el) return;
-          navigator.clipboard.writeText(el.textContent.trim()).then(function() {{
+          copyText((el.textContent || '').trim()).then(function() {{
             var t = btn.textContent;
             btn.textContent = 'Copied!';
             setTimeout(function() {{ btn.textContent = t; }}, 1500);
-          }}).catch(function() {{ alert('Failed to copy'); }});
+          }}).catch(function() {{
+            alert('Failed to copy. Please copy manually from the field.');
+          }});
         }}
         </script>
         """

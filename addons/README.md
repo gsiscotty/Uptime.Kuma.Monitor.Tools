@@ -46,7 +46,7 @@ Provides Synology-parity runtime complexity on Unix (auth UI, helper/scheduler m
 - Installer:
 
 ```bash
-curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-monitor/install.sh | bash
+curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-monitor/install.sh | sudo bash
 ```
 
 ## Notes

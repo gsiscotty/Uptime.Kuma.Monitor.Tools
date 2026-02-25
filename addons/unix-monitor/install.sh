@@ -57,11 +57,44 @@ install_python() {
     fi
 }
 
+apt_pkg_installed() {
+    local pkg="$1"
+    dpkg-query -W -f='${Status}' "${pkg}" 2>/dev/null | rg -q "install ok installed"
+}
+
+apt_pkg_version() {
+    local pkg="$1"
+    dpkg-query -W -f='${Version}' "${pkg}" 2>/dev/null || echo "unknown"
+}
+
+install_apt_packages() {
+    local failed=0
+    local pkg
+    for pkg in "$@"; do
+        if apt_pkg_installed "${pkg}"; then
+            info "${pkg}: already installed ($(apt_pkg_version "${pkg}"))"
+            continue
+        fi
+        warn "${pkg}: installing..."
+        if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkg}" >/dev/null; then
+            info "${pkg}: installed ($(apt_pkg_version "${pkg}"))"
+        else
+            err "${pkg}: install failed"
+            failed=1
+        fi
+    done
+    return "${failed}"
+}
+
 install_smartmontools() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
         case "${ID:-}${ID_LIKE:-}" in
-            *debian*|*ubuntu*) sudo apt-get install -y -qq smartmontools ;;
+            *debian*|*ubuntu*)
+                info "Refreshing apt package index..."
+                sudo apt-get update -qq || true
+                install_apt_packages smartmontools
+                ;;
             *) return 1 ;;
         esac
     else
@@ -92,6 +125,7 @@ PY
         . /etc/os-release
         case "${ID:-}${ID_LIKE:-}" in
             *debian*|*ubuntu*)
+                info "Refreshing apt package index for Python dependencies..."
                 sudo apt-get update -qq || true
                 local apt_pkgs=(
                     python3-pyotp
@@ -101,10 +135,9 @@ PY
                     python3-cryptography
                     python3-pip
                 )
-                for pkg in "${apt_pkgs[@]}"; do
-                    sudo apt-get install -y -qq "${pkg}" >/dev/null 2>&1 || true
-                done
+                install_apt_packages "${apt_pkgs[@]}" || true
                 if deps_ok; then
+                    info "Python UI/auth dependency check: OK (apt path)"
                     return 0
                 fi
                 ;;
@@ -122,10 +155,15 @@ PY
     fi
 
     # Try with --break-system-packages first; fallback without for older pip.
+    warn "Falling back to pip for missing Python dependencies..."
     sudo python3 -m pip install --upgrade pip --break-system-packages >/dev/null 2>&1 || sudo python3 -m pip install --upgrade pip >/dev/null 2>&1 || true
     sudo python3 -m pip install pyotp qrcode pillow werkzeug cryptography --break-system-packages >/dev/null 2>&1 || sudo python3 -m pip install pyotp qrcode pillow werkzeug cryptography >/dev/null 2>&1 || true
 
-    deps_ok
+    if deps_ok; then
+        info "Python UI/auth dependency check: OK (pip fallback path)"
+        return 0
+    fi
+    return 1
 }
 
 echo ""

@@ -15,7 +15,7 @@ Runtime name is generated from system info:
 ## Quick Install
 
 ```bash
-curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-monitor/install.sh | bash
+curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-monitor/install.sh | sudo bash
 ```
 
 ## Architecture
