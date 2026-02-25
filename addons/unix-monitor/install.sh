@@ -70,12 +70,62 @@ install_smartmontools() {
 }
 
 install_python_deps() {
-    if command -v python3 >/dev/null 2>&1; then
-        python3 -m pip install --upgrade pip >/dev/null 2>&1 || true
-        python3 -m pip install pyotp qrcode pillow werkzeug cryptography >/dev/null 2>&1 || return 1
+    if ! command -v python3 >/dev/null 2>&1; then
+        return 1
+    fi
+
+    deps_ok() {
+        python3 - <<'PY' >/dev/null 2>&1
+import importlib.util, sys
+mods = ["pyotp", "qrcode", "werkzeug", "cryptography", "PIL"]
+missing = [m for m in mods if importlib.util.find_spec(m) is None]
+sys.exit(0 if not missing else 1)
+PY
+    }
+
+    if deps_ok; then
         return 0
     fi
-    return 1
+
+    # 1) Prefer distro packages on Debian/Ubuntu
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        case "${ID:-}${ID_LIKE:-}" in
+            *debian*|*ubuntu*)
+                sudo apt-get update -qq || true
+                local apt_pkgs=(
+                    python3-pyotp
+                    python3-qrcode
+                    python3-pil
+                    python3-werkzeug
+                    python3-cryptography
+                    python3-pip
+                )
+                for pkg in "${apt_pkgs[@]}"; do
+                    sudo apt-get install -y -qq "${pkg}" >/dev/null 2>&1 || true
+                done
+                if deps_ok; then
+                    return 0
+                fi
+                ;;
+        esac
+    fi
+
+    # 2) Fallback to pip (system-wide), including externally-managed Python setups
+    if ! python3 -m pip --version >/dev/null 2>&1; then
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            case "${ID:-}${ID_LIKE:-}" in
+                *debian*|*ubuntu*) sudo apt-get install -y -qq python3-pip >/dev/null 2>&1 || true ;;
+            esac
+        fi
+    fi
+
+    # Try with --break-system-packages first; fallback without for older pip.
+    sudo python3 -m pip install --upgrade pip --break-system-packages >/dev/null 2>&1 || sudo python3 -m pip install --upgrade pip >/dev/null 2>&1 || true
+    sudo python3 -m pip install pyotp qrcode pillow werkzeug cryptography --break-system-packages >/dev/null 2>&1 || sudo python3 -m pip install pyotp qrcode pillow werkzeug cryptography >/dev/null 2>&1 || true
+
+    deps_ok
 }
 
 echo ""
@@ -194,8 +244,10 @@ if [[ ! "${INSTALL_PY_DEPS:-Y}" =~ ^[Nn]$ ]]; then
     if install_python_deps; then
         info "Python dependencies installed."
     else
-        warn "Could not install all Python dependencies automatically."
-        warn "Install manually: python3 -m pip install pyotp qrcode pillow werkzeug cryptography"
+        warn "Could not install all Python dependencies automatically (apt + pip fallback attempted)."
+        warn "Manual fallback:"
+        warn "  sudo apt install python3-pyotp python3-qrcode python3-pil python3-werkzeug python3-cryptography"
+        warn "  or: sudo python3 -m pip install pyotp qrcode pillow werkzeug cryptography --break-system-packages"
     fi
 fi
 
