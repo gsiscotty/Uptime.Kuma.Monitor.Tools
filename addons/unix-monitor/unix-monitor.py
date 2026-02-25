@@ -120,6 +120,28 @@ PRODUCT_DESC = (
 )
 
 
+def _normalize_source_platform(value: str) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return "unix"
+    if "synology" in raw or raw == "dsm":
+        return "synology"
+    return "unix"
+
+
+def _monitor_source_platform(monitor: Dict[str, Any]) -> str:
+    hint = (
+        str(monitor.get("source_platform", "") or "")
+        or str(monitor.get("platform", "") or "")
+        or str(monitor.get("source", "") or "")
+    )
+    return _normalize_source_platform(hint)
+
+
+def _check_title_for_platform(source_platform: str) -> str:
+    return "Synology check" if _normalize_source_platform(source_platform) == "synology" else "Unix check"
+
+
 def get_script_path() -> Path:
     return Path(__file__).resolve()
 
@@ -991,6 +1013,8 @@ def _peer_push_to_master(cfg: Dict[str, Any]) -> str:
         "instance_id": instance_id,
         "instance_name": instance_name,
         "version": VERSION,
+        "platform": SYSTEM_LABEL,
+        "platform_family": "unix",
         "monitors": monitors_cfg,
         "history": history[-200:],
         "state": state,
@@ -1381,6 +1405,30 @@ def _peer_create_remote_monitor(cfg: Dict[str, Any], peer_id: str,
         return f"Error: {type(e).__name__}: {e}"
 
 
+def _infer_peer_source_platform(cfg: Dict[str, Any], peer_id: str) -> str:
+    for p in (cfg.get("peers", []) or []):
+        if str(p.get("instance_id", "")) != peer_id:
+            continue
+        direct = str(p.get("platform", "") or "")
+        if direct:
+            return _normalize_source_platform(direct)
+        probe = " ".join(
+            [
+                str(p.get("instance_name", "") or ""),
+                str(p.get("version", "") or ""),
+                str(p.get("url", "") or ""),
+            ]
+        )
+        if "synology" in probe.lower() or "dsm" in probe.lower():
+            return "synology"
+    snap = _load_peer_snapshot(peer_id) or {}
+    for key in ("platform", "platform_family", "instance_name", "version"):
+        val = str(snap.get(key, "") or "")
+        if "synology" in val.lower() or "dsm" in val.lower():
+            return "synology"
+    return "unix"
+
+
 def get_smart_cache_path() -> Path:
     return get_runtime_data_dir() / "unix-smart-cache.json"
 
@@ -1677,6 +1725,8 @@ def _scheduler_status_text(cfg: Dict[str, Any]) -> str:
     backend = str(cfg.get("scheduler_backend", "cron")).strip().lower()
     if backend not in ("systemd", "cron"):
         backend = "cron"
+    cfg_path = str(get_config_path())
+    runtime_dir = str(get_runtime_data_dir())
     state = _read_schedule_state()
     last_ts = int(state.get("last_run_ts", 0) or 0)
     last_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_ts)) if last_ts else "never"
@@ -1699,6 +1749,8 @@ def _scheduler_status_text(cfg: Dict[str, Any]) -> str:
             f"Timer last trigger: {t.get('last', 'n/a')}",
             f"Last scheduled run (state file): {last_text}",
             f"SMART elevated cache: {'active' if helper_ok else 'inactive'} | {helper_msg}",
+            f"Config file: {cfg_path}",
+            f"Runtime data dir: {runtime_dir}",
             f"Scheduler service script: {_scheduler_service_path()}",
         ]
     else:
@@ -1724,6 +1776,8 @@ def _scheduler_status_text(cfg: Dict[str, Any]) -> str:
             f"Global fallback interval: {interval} minute(s)",
             f"Last scheduled run: {last_text}",
             f"SMART elevated cache: {'active' if helper_ok else 'inactive'} | {helper_msg}",
+            f"Config file: {cfg_path}",
+            f"Runtime data dir: {runtime_dir}",
             f"Scheduler service script: {_scheduler_service_path()}",
         ]
     per_mon = state.get("per_monitor", {})
@@ -3167,7 +3221,7 @@ def run_backup_helper() -> int:
     return 0
 
 
-def _probe_backup() -> Tuple[str, List[str], float]:
+def _probe_backup(source_platform: str = "unix") -> Tuple[str, List[str], float]:
     """Check backup status, reading from root helper cache or direct probing."""
     t0 = time.time()
     lines: List[str] = []
@@ -3248,7 +3302,10 @@ def _probe_backup() -> Tuple[str, List[str], float]:
                 status = "warning"
         else:
             lines.append("Backup logs not accessible (root helper needed)")
-            lines.append("Run the elevated helper task in DSM Task Scheduler to enable full backup monitoring")
+            if _normalize_source_platform(source_platform) == "synology":
+                lines.append("Run the elevated helper task in DSM Task Scheduler to enable full backup monitoring")
+            else:
+                lines.append("Run the elevated backup helper as root (--run-backup-helper) to enable full backup monitoring")
             status = "warning" if packages else "up"
     except Exception as exc:
         lines.append(f"Direct probe failed: {type(exc).__name__}: {exc}")
@@ -3441,6 +3498,7 @@ def check_host_with_monitor(mode: str, devices: List[str], monitor: Dict[str, An
     worst = "up"
     max_latency = 0.0
     sections: List[str] = []
+    source_platform = _monitor_source_platform(monitor)
 
     if mode == "mount":
         mounts_data = monitor.get("mounts", [])
@@ -3499,14 +3557,15 @@ def check_host_with_monitor(mode: str, devices: List[str], monitor: Dict[str, An
         sections.append("DNS:\n" + "\n".join(f"  - {x}" for x in d_lines))
 
     if mode == "backup":
-        b_status, b_lines, b_lat = _probe_backup()
+        b_status, b_lines, b_lat = _probe_backup(source_platform=source_platform)
         max_latency = max(max_latency, b_lat)
         if _severity(b_status) > _severity(worst):
             worst = b_status
         sections.append("Backup:\n" + "\n".join(f"  - {x}" for x in b_lines))
 
     now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-    msg = f"Unix check ({mode}) = {worst} @ {now}\n" + "\n".join(sections)
+    check_title = _check_title_for_platform(source_platform)
+    msg = f"{check_title} ({mode}) = {worst} @ {now}\n" + "\n".join(sections)
     return worst, msg, max_latency
 
 
@@ -5949,9 +6008,11 @@ def _ui_test_push(target_monitor: Optional[str] = None) -> str:
             return f"Monitor not found: {target_monitor}"
         monitors = [target]
     now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-    msg = f"Test push @ {now} - {BRAND_NAME} unix-monitor connectivity check"
     lines: List[str] = []
     for m in monitors:
+        source_platform = _monitor_source_platform(m)
+        flavor = "synology-monitor" if source_platform == "synology" else "unix-monitor"
+        msg = f"Test push @ {now} - {BRAND_NAME} {flavor} connectivity check"
         ok = push_to_kuma(m.get("kuma_url", ""), "up", msg, 0, debug=bool(cfg.get("debug", False)))
         line = f"{'ok' if ok else 'x'} {m.get('name', '?')}: push {'OK' if ok else 'FAILED'}"
         lines.append(line)
@@ -6601,6 +6662,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                         p["last_seen"] = int(time.time())
                         p["monitor_count"] = len(data.get("monitors", []))
                         p["version"] = str(data.get("version", "") or "")
+                        p["platform"] = str(data.get("platform", "") or "")
                         p["status"] = "online"
                         existing_url = str(p.get("url", "") or "").strip()
                         # Preserve a manually set URL; only auto-fill from callback when unlocked.
@@ -6615,6 +6677,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                         "last_seen": int(time.time()),
                         "monitor_count": len(data.get("monitors", [])),
                         "version": str(data.get("version", "") or ""),
+                        "platform": str(data.get("platform", "") or ""),
                         "status": "online",
                         "role": "agent",
                     }
@@ -6740,7 +6803,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     self._reply_json({"error": f"monitor '{m_name}' already exists"}, 409)
                     return
                 new_mon: Dict[str, Any] = {"name": m_name, "check_mode": m_mode, "kuma_url": m_url}
-                for extra_key in ("probe_host", "probe_port", "dns_name", "dns_server"):
+                for extra_key in ("probe_host", "probe_port", "dns_name", "dns_server", "source_platform"):
                     val = str(data.get(extra_key, "") or "").strip()
                     if val:
                         new_mon[extra_key] = val
@@ -7750,10 +7813,12 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 cfg = load_config()
                 target_peer = (form.get("target_peer", ["local"])[0] or "local").strip()
                 if target_peer and target_peer != "local" and not edit_original_name:
+                    source_platform = _infer_peer_source_platform(cfg, target_peer)
                     agent_monitor_cfg: Dict[str, Any] = {
                         "name": name,
                         "check_mode": mode,
                         "kuma_url": kuma_url,
+                        "source_platform": source_platform,
                     }
                     for ek, ev in (("probe_host", probe_host), ("probe_port", probe_port), ("dns_name", dns_name), ("dns_server", dns_server)):
                         if ev:
@@ -7771,6 +7836,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                         "interval": interval,
                         "cron_enabled": cron_enabled,
                         "_remote_peer": target_peer,
+                        "source_platform": source_platform,
                     }
                     cfg.setdefault("monitors", []).append(master_monitor)
                     cfg["cron_enabled"] = any(m.get("cron_enabled", False) for m in cfg.get("monitors", []))
@@ -7804,6 +7870,8 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                             new_monitor["devices"] = keep_devices
                             if m.get("_remote_peer"):
                                 new_monitor["_remote_peer"] = m["_remote_peer"]
+                            if m.get("source_platform"):
+                                new_monitor["source_platform"] = m["source_platform"]
                             cfg["monitors"][i] = new_monitor
                             updated = True
                             break
@@ -7866,13 +7934,23 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
 
 def run_scheduled() -> int:
     cfg = load_config()
-    monitors = cfg.get("monitors", [])
+    monitors = [m for m in cfg.get("monitors", []) if isinstance(m, dict)]
+    cfg_path = str(get_config_path())
+    runtime_dir = str(get_runtime_data_dir())
     if not monitors:
+        append_ui_log(f"scheduled-run | skipped | no monitors | cfg={cfg_path} | data_dir={runtime_dir}")
         return 0
     global_cron = bool(cfg.get("cron_enabled", False))
     global_interval = int(cfg.get("cron_interval_minutes", 60) or 60)
     dbg = bool(cfg.get("debug", False))
+    due_count = 0
+    attempted_count = 0
     ran_any = False
+    append_ui_log(
+        "scheduled-run | start | "
+        f"monitors={len(monitors)} | global_cron={'on' if global_cron else 'off'} | "
+        f"global_interval={global_interval} | cfg={cfg_path} | data_dir={runtime_dir}"
+    )
     for m in monitors:
         name = str(m.get("name", "")).strip()
         if not name:
@@ -7880,34 +7958,55 @@ def run_scheduled() -> int:
         mon_cron = bool(m.get("cron_enabled", global_cron))
         if not mon_cron:
             continue
-        mon_interval = int(m.get("interval", global_interval) or global_interval)
-        if not _is_scheduled_due(mon_interval, monitor_name=name):
+        try:
+            mon_interval = int(m.get("interval", global_interval) or global_interval)
+        except (TypeError, ValueError):
+            mon_interval = global_interval
+        mon_interval = max(1, mon_interval)
+        due = _is_scheduled_due(mon_interval, monitor_name=name)
+        if not due:
             continue
+        due_count += 1
         mode = str(m.get("check_mode", "smart")).lower()
         if mode not in CHECK_MODES:
             mode = "smart"
-        url = m.get("kuma_url", "")
-        if not url:
-            continue
-        devices = [str(x) for x in m.get("devices", [])]
-        status, msg, lat = check_host_with_monitor(mode, devices, monitor=m, debug=dbg)
-        ok = push_to_kuma(url, status, msg, lat, debug=dbg)
-        recorded_status = status if ok else "warning"
-        _record_history(name, mode, recorded_status, lat)
-        line = f"{'ok' if ok else 'x'} {name}: {status} (ping={lat:.2f}ms) push {'OK' if ok else 'FAILED'}"
-        _set_monitor_state(
-            name,
-            "Automatic monitor check completed" if ok else "Automatic monitor check completed with errors",
-            line,
-            level="ok" if ok else "err",
-        )
-        append_ui_log(
-            f"scheduled-check | {name} | mode={mode} | status={status} | ping_ms={lat:.2f} | push={'OK' if ok else 'FAILED'}"
-        )
-        _touch_scheduled_run(monitor_name=name)
+        attempted_count += 1
         ran_any = True
+        try:
+            url = m.get("kuma_url", "")
+            if not url:
+                line = f"x {name}: no Kuma URL"
+                _set_monitor_state(name, "Automatic monitor check skipped", line, level="err")
+                append_ui_log(f"scheduled-check | {name} | mode={mode} | skipped | no Kuma URL")
+                continue
+            devices = [str(x) for x in m.get("devices", [])]
+            status, msg, lat = check_host_with_monitor(mode, devices, monitor=m, debug=dbg)
+            ok = push_to_kuma(url, status, msg, lat, debug=dbg)
+            recorded_status = status if ok else "warning"
+            _record_history(name, mode, recorded_status, lat)
+            line = f"{'ok' if ok else 'x'} {name}: {status} (ping={lat:.2f}ms) push {'OK' if ok else 'FAILED'}"
+            _set_monitor_state(
+                name,
+                "Automatic monitor check completed" if ok else "Automatic monitor check completed with errors",
+                line,
+                level="ok" if ok else "err",
+            )
+            append_ui_log(
+                f"scheduled-check | {name} | mode={mode} | status={status} | ping_ms={lat:.2f} | push={'OK' if ok else 'FAILED'}"
+            )
+        except Exception as e:
+            err_line = f"x {name}: scheduler error {type(e).__name__}: {e}"
+            _set_monitor_state(name, "Automatic monitor check failed", err_line, level="err")
+            append_ui_log(f"scheduled-check | {name} | mode={mode} | error={type(e).__name__}: {e}")
+        finally:
+            _touch_scheduled_run(monitor_name=name)
     if ran_any:
+        _touch_scheduled_run()
         _trigger_peer_sync_bg(cfg)
+    append_ui_log(
+        "scheduled-run | done | "
+        f"due={due_count} | attempted={attempted_count} | ran_any={'yes' if ran_any else 'no'}"
+    )
     return 0
 
 
