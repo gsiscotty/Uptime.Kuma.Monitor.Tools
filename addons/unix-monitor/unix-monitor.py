@@ -2253,6 +2253,99 @@ def _build_live_snapshot() -> Dict[str, Any]:
     }
 
 
+def _build_live_snapshot_for_source(source_id: str = "local") -> Dict[str, Any]:
+    """Build a live snapshot scoped to one source context (local or a peer instance_id)."""
+    base = _build_live_snapshot()
+    cfg = load_config()
+    local_name = str(cfg.get("instance_name", "") or "").strip() or "Local"
+    sid = (source_id or "local").strip()
+    if sid == "local":
+        base["source_id"] = "local"
+        base["source_name"] = local_name
+        base["source_scope"] = "local"
+        return base
+
+    if not _is_valid_peer_instance_id(sid):
+        base["source_id"] = "local"
+        base["source_name"] = local_name
+        base["source_scope"] = "local"
+        return base
+
+    snap = _load_peer_snapshot(sid)
+    if not snap:
+        base["source_id"] = "local"
+        base["source_name"] = local_name
+        base["source_scope"] = "local"
+        return base
+
+    channels_order = ("smart", "storage", "ping", "port", "dns", "backup")
+    peer_name = str(snap.get("instance_name", "") or sid[:8])
+    peer_history = snap.get("history", [])
+    peer_state = snap.get("state", {})
+    peer_monitors_cfg = snap.get("monitors", [])
+
+    used_channels: List[str] = []
+    for pm in peer_monitors_cfg:
+        mode = str(pm.get("check_mode", "smart")).lower()
+        if mode in channels_order and mode not in used_channels:
+            used_channels.append(mode)
+    for e in peer_history:
+        ch = str(e.get("channel", "")).lower()
+        if ch in channels_order and ch not in used_channels:
+            used_channels.append(ch)
+    used_channels = [c for c in channels_order if c in used_channels] or ["smart", "storage"]
+
+    channel_data: Dict[str, Dict[str, Any]] = {}
+    for channel in used_channels:
+        items = [e for e in peer_history if str(e.get("channel")) == channel]
+        latest = items[-1] if items else {}
+        st = str(latest.get("status", "unknown"))
+        pct = {"up": 100, "warning": 55, "down": 15}.get(st, 0)
+        ts = int(latest.get("ts", 0) or 0)
+        channel_data[channel] = {
+            "status": st,
+            "pct": pct,
+            "ts": ts,
+            "history_statuses": [str(x.get("status", "unknown")) for x in items[-20:]],
+        }
+
+    peer_monitor_latest: Dict[str, Dict[str, Any]] = {}
+    for e in peer_history:
+        mn = str(e.get("monitor", ""))
+        if mn:
+            peer_monitor_latest[mn] = e
+
+    monitors: List[Dict[str, Any]] = []
+    for pm in peer_monitors_cfg:
+        pname = str(pm.get("name", "?"))
+        pmode = str(pm.get("check_mode", "smart"))
+        platest = peer_monitor_latest.get(pname, {})
+        pst = str(platest.get("status", "unknown"))
+        pping = platest.get("ping_ms", "n/a")
+        pts = int(platest.get("ts", 0) or 0)
+        ps = peer_state.get(pname, {})
+        monitors.append(
+            {
+                "name": pname,
+                "mode": pmode,
+                "status": pst,
+                "ping_ms": pping,
+                "ts": pts,
+                "banner": str(ps.get("banner", "") or ""),
+                "output": str(ps.get("output", "") or ""),
+                "level": "err" if str(ps.get("level", "ok")) == "err" else "ok",
+                "origin": peer_name,
+            }
+        )
+
+    base["channels"] = channel_data
+    base["monitors"] = monitors
+    base["source_id"] = sid
+    base["source_name"] = peer_name
+    base["source_scope"] = "remote"
+    return base
+
+
 def get_smart_helper_status() -> Tuple[bool, str]:
     if os.geteuid() == 0:
         return True, "Package is running as root."
@@ -4357,11 +4450,29 @@ def _render_setup_html(
         status_html += f"<pre>{html.escape(action_output)}</pre>"
     if ssl_warning:
         status_html = f"<div class='err'>{html.escape(ssl_warning)}</div>" + status_html
+    peer_role = str(cfg.get("peer_role", "standalone") or "standalone").lower()
+    local_source_name = browser_instance_name or "Local"
+    available_sources: List[Tuple[str, str]] = [("local", local_source_name)]
+    if peer_role == "master":
+        for sp in (cfg.get("peers", []) or []):
+            sp_id = str(sp.get("instance_id", "") or "").strip()
+            if not _is_valid_peer_instance_id(sp_id):
+                continue
+            sp_name = str(sp.get("instance_name", "") or sp_id[:8])
+            available_sources.append((sp_id, sp_name))
+
+    source_map = {sid: sname for sid, sname in available_sources}
     log_source = (log_source or "local").strip()
+    if log_source not in source_map:
+        log_source = "local"
+    source_label = log_source
+    source_name = source_map.get(source_label, local_source_name)
+    source_is_remote = source_label != "local"
+
     agent_log_async = False
-    if log_source != "local" and diag_view in ("logs", "config", "history", "cache", "system"):
+    if source_is_remote and diag_view in ("logs", "task", "config", "cache", "history", "paths", "system"):
         if diagnose_agent:
-            log_text = _diagnose_agent_diag_connection(cfg, log_source)
+            log_text = _diagnose_agent_diag_connection(cfg, source_label)
         else:
             log_text = "Loading agent logs..."
             agent_log_async = True
@@ -4405,36 +4516,33 @@ def _render_setup_html(
     def status_label(status: str) -> str:
         return status.upper() if status in ("up", "warning", "down") else "UNKNOWN"
 
-    # Overview gauges based on configured channels.
+    # Overview gauges are scoped to the selected source context.
+    source_snapshot = _build_live_snapshot_for_source(source_label)
+    source_label = str(source_snapshot.get("source_id", source_label) or "local")
+    source_name = str(source_snapshot.get("source_name", source_name) or source_name)
+    source_is_remote = source_label != "local"
+    source_channels = source_snapshot.get("channels", {}) if isinstance(source_snapshot.get("channels", {}), dict) else {}
+    source_monitors = source_snapshot.get("monitors", []) if isinstance(source_snapshot.get("monitors", []), list) else []
     channels_order = ("smart", "storage", "ping", "port", "dns", "backup")
-    overview_channels: List[str] = []
-    for m in monitors:
-        mode = str(m.get("check_mode", "smart")).lower()
-        if mode in channels_order and mode not in overview_channels:
-            overview_channels.append(mode)
-    for e in history:
-        ch = str(e.get("channel", "")).lower()
-        if ch in channels_order and ch not in overview_channels:
-            overview_channels.append(ch)
-    overview_channels = [c for c in channels_order if c in overview_channels]
+    overview_channels = [c for c in channels_order if c in source_channels]
     if not overview_channels:
         overview_channels = ["smart", "storage"]
 
     channel_cards: List[str] = []
     for channel in overview_channels:
-        items = [e for e in history if str(e.get("channel")) == channel]
-        latest = items[-1] if items else {}
-        st = str(latest.get("status", "unknown"))
-        pct = status_pct(st)
-        last_ts = int(latest.get("ts", 0) or 0)
+        ch_data = source_channels.get(channel, {}) if isinstance(source_channels.get(channel, {}), dict) else {}
+        st = str(ch_data.get("status", "unknown"))
+        pct = int(ch_data.get("pct", status_pct(st)) or status_pct(st))
+        last_ts = int(ch_data.get("ts", 0) or 0)
         ts_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_ts)) if last_ts else "n/a"
+        history_statuses = ch_data.get("history_statuses", []) if isinstance(ch_data.get("history_statuses", []), list) else []
         dots = "".join(
-            f"<span class='dot {status_class(str(x.get('status', 'unknown')))}' title='{html.escape(str(x.get('status', 'unknown')))}'></span>"
-            for x in items[-20:]
+            f"<span class='dot {status_class(str(x))}' title='{html.escape(str(x))}'></span>"
+            for x in history_statuses[-20:]
         ) or "<span class='muted'>no history</span>"
         mapped = []
-        for m in monitors:
-            mode = str(m.get("check_mode", "smart")).lower()
+        for m in source_monitors:
+            mode = str(m.get("mode", m.get("check_mode", "smart"))).lower()
             if mode == channel:
                 mapped.append(str(m.get("name", "?")))
         mapped_count = len(mapped)
@@ -4449,7 +4557,7 @@ def _render_setup_html(
         channel_cards.append(
             f"<div class='overview-card {'hl-channel' if is_hl else ''}' data-channel='{channel}'>"
             f"<h4>{channel.capitalize()} Monitoring</h4>"
-            f"<a class='gauge-link' href='/?view=overview&diag_view=logs&log_filter={channel}&highlight={channel}'>"
+            f"<a class='gauge-link' href='/?view=overview&diag_view=logs&log_filter={channel}&highlight={channel}&source={html.escape(source_label)}'>"
             f"<div class='gauge {status_class(st)}' data-role='gauge' style='--pct:{pct}'>"
             f"<div class='gauge-center'><div class='gauge-value' data-role='gauge-value'>{status_label(st)}</div><div class='gauge-sub' data-role='gauge-sub'>{pct}%</div></div>"
             "</div>"
@@ -4460,8 +4568,6 @@ def _render_setup_html(
             "</div>"
         )
     overview_html = "".join(channel_cards)
-
-    peer_role = str(cfg.get("peer_role", "standalone") or "standalone").lower()
 
     # Setup steps with integrated screenshots.
     guide_images = get_task_guide_images()
@@ -4618,26 +4724,22 @@ def _render_setup_html(
         "paths": "paths",
         "system": "system",
     }.get((diag_view or "logs").lower(), "logs")
-    source_label = log_source if log_source else "local"
-    source_chips_html = ""
-    if peer_role == "master" and diag_label in ("logs", "config", "history", "cache", "system"):
+    source_tabs_html = ""
+    if peer_role == "master":
         q_base = f"view=overview&amp;diag_view={diag_label}&amp;log_filter={filter_label}"
-        src_chips = [f"<a class='chip {'active' if source_label=='local' else ''}' href='?{q_base}&amp;log_source=local'>Local</a>"]
-        for sp in (cfg.get("peers", []) or []):
-            sp_id = str(sp.get("instance_id", "") or "").strip()
-            if not _is_valid_peer_instance_id(sp_id):
-                continue
-            sp_name = str(sp.get("instance_name", "") or sp_id[:8])
+        src_chips = []
+        for sid, sname in available_sources:
             src_chips.append(
-                f"<a class='chip {'active' if source_label==sp_id else ''}' "
-                f"href='?{q_base}&amp;log_source={html.escape(sp_id)}'>"
-                f"{html.escape(sp_name)}</a>"
+                f"<a class='chip {'active' if source_label==sid else ''}' "
+                f"href='?{q_base}&amp;source={html.escape(sid)}'>"
+                f"{html.escape(sname)}{' (Remote)' if sid != 'local' else ' (Local)'}"
+                "</a>"
             )
-        source_chips_html = (
-            "<span style='display:flex;gap:6px;align-items:center;margin-left:auto;'>"
-            "<span class='muted' style='font-size:11px;white-space:nowrap;'>Source:</span>"
+        source_tabs_html = (
+            "<div class='chip-row source-tabs' style='margin-top:8px;'>"
+            "<span class='muted' style='font-size:11px;white-space:nowrap;'>Source context:</span>"
             + "".join(src_chips)
-            + "</span>"
+            + "</div>"
         )
     modal_open = bool(create_mode or edit_original_name)
     modal_title = "Edit Monitor" if edit_original_name else "Create Monitor"
@@ -4709,33 +4811,41 @@ def _render_setup_html(
     )
     nav_html = (
         "<div class='card'><div class='chip-row nav-tabs'>"
-        + f"<a class='chip {'active' if ui_view=='overview' else ''}' href='/?view=overview&diag_view={diag_label}&log_filter={filter_label}'>Overview</a>"
+        + f"<a class='chip {'active' if ui_view=='overview' else ''}' href='/?view=overview&diag_view={diag_label}&log_filter={filter_label}&source={html.escape(source_label)}'>Overview</a>"
         + f"<a class='chip {'active' if ui_view=='setup' else ''}' href='/?view=setup'>Monitor Setup</a>"
         + f"<a class='chip {'active' if ui_view=='settings' else ''}' href='/?view=settings'>Settings</a>"
-        + "</div></div>"
+        + "</div>"
+        + (source_tabs_html if ui_view == "overview" else "")
+        + "</div>"
+    )
+    overview_context_html = (
+        f"<div class='err' style='margin-bottom:10px;'>Viewing remote source context: <b>{html.escape(source_name)}</b>. "
+        "Gauges and diagnostics are scoped to this source.</div>"
+        if source_is_remote
+        else f"<div class='ok' style='margin-bottom:10px;'>Viewing local source context: <b>{html.escape(source_name)}</b>.</div>"
     )
     overview_view_html = f"""
       <div class="card">
         <h3>Monitoring Overview</h3>
+        {overview_context_html}
         <div class="overview-grid">{overview_html}</div>
       </div>
       <div class="card">
         <h3>Logs & Diagnostics</h3>
         <div class="chip-row" style="flex-wrap:wrap;">
-          <a class="chip {'active' if diag_label=='logs' else ''}" href="?view=overview&amp;diag_view=logs&amp;log_filter={html.escape(filter_label)}&amp;log_source={html.escape(source_label)}">Logs</a>
-          <a class="chip {'active' if diag_label=='task' else ''}" href="?view=overview&amp;diag_view=task&amp;log_source={html.escape(source_label)}">Task</a>
-          <a class="chip {'active' if diag_label=='cache' else ''}" href="?view=overview&amp;diag_view=cache&amp;log_source={html.escape(source_label)}">Cache</a>
-          <a class="chip {'active' if diag_label=='config' else ''}" href="?view=overview&amp;diag_view=config&amp;log_source={html.escape(source_label)}">Config</a>
-          <a class="chip {'active' if diag_label=='history' else ''}" href="?view=overview&amp;diag_view=history&amp;log_source={html.escape(source_label)}">History</a>
-          <a class="chip {'active' if diag_label=='paths' else ''}" href="?view=overview&amp;diag_view=paths&amp;log_source={html.escape(source_label)}">Paths</a>
-          <a class="chip {'active' if diag_label=='system' else ''}" href="?view=overview&amp;diag_view=system&amp;log_source={html.escape(source_label)}">System</a>
-          {source_chips_html}
+          <a class="chip {'active' if diag_label=='logs' else ''}" href="?view=overview&amp;diag_view=logs&amp;log_filter={html.escape(filter_label)}&amp;source={html.escape(source_label)}">Logs</a>
+          <a class="chip {'active' if diag_label=='task' else ''}" href="?view=overview&amp;diag_view=task&amp;source={html.escape(source_label)}">Task</a>
+          <a class="chip {'active' if diag_label=='cache' else ''}" href="?view=overview&amp;diag_view=cache&amp;source={html.escape(source_label)}">Cache</a>
+          <a class="chip {'active' if diag_label=='config' else ''}" href="?view=overview&amp;diag_view=config&amp;source={html.escape(source_label)}">Config</a>
+          <a class="chip {'active' if diag_label=='history' else ''}" href="?view=overview&amp;diag_view=history&amp;source={html.escape(source_label)}">History</a>
+          <a class="chip {'active' if diag_label=='paths' else ''}" href="?view=overview&amp;diag_view=paths&amp;source={html.escape(source_label)}">Paths</a>
+          <a class="chip {'active' if diag_label=='system' else ''}" href="?view=overview&amp;diag_view=system&amp;source={html.escape(source_label)}">System</a>
         </div>
-        {"<div class='chip-row'><a class='chip " + ("active" if filter_label=='all' else "") + "' href='?view=overview&diag_view=logs&log_filter=all&log_source=" + html.escape(source_label) + "'>All</a><a class='chip " + ("active" if filter_label=='smart' else "") + "' href='?view=overview&diag_view=logs&log_filter=smart&log_source=" + html.escape(source_label) + "'>Smart</a><a class='chip " + ("active" if filter_label=='storage' else "") + "' href='?view=overview&diag_view=logs&log_filter=storage&log_source=" + html.escape(source_label) + "'>Storage</a><a class='chip " + ("active" if filter_label=='ping' else "") + "' href='?view=overview&diag_view=logs&log_filter=ping&log_source=" + html.escape(source_label) + "'>Ping</a><a class='chip " + ("active" if filter_label=='port' else "") + "' href='?view=overview&diag_view=logs&log_filter=port&log_source=" + html.escape(source_label) + "'>Port</a><a class='chip " + ("active" if filter_label=='dns' else "") + "' href='?view=overview&diag_view=logs&log_filter=dns&log_source=" + html.escape(source_label) + "'>DNS</a><a class='chip " + ("active" if filter_label=='backup' else "") + "' href='?view=overview&diag_view=logs&log_filter=backup&log_source=" + html.escape(source_label) + "'>Backup</a></div>" if diag_label=='logs' else ""}
+        {"<div class='chip-row'><a class='chip " + ("active" if filter_label=='all' else "") + "' href='?view=overview&diag_view=logs&log_filter=all&source=" + html.escape(source_label) + "'>All</a><a class='chip " + ("active" if filter_label=='smart' else "") + "' href='?view=overview&diag_view=logs&log_filter=smart&source=" + html.escape(source_label) + "'>Smart</a><a class='chip " + ("active" if filter_label=='storage' else "") + "' href='?view=overview&diag_view=logs&log_filter=storage&source=" + html.escape(source_label) + "'>Storage</a><a class='chip " + ("active" if filter_label=='ping' else "") + "' href='?view=overview&diag_view=logs&log_filter=ping&source=" + html.escape(source_label) + "'>Ping</a><a class='chip " + ("active" if filter_label=='port' else "") + "' href='?view=overview&diag_view=logs&log_filter=port&source=" + html.escape(source_label) + "'>Port</a><a class='chip " + ("active" if filter_label=='dns' else "") + "' href='?view=overview&diag_view=logs&log_filter=dns&source=" + html.escape(source_label) + "'>DNS</a><a class='chip " + ("active" if filter_label=='backup' else "") + "' href='?view=overview&diag_view=logs&log_filter=backup&source=" + html.escape(source_label) + "'>Backup</a></div>" if diag_label=='logs' else ""}
         <pre id="log-diag-pre"{' data-agent-fetch="1" data-peer-id="' + html.escape(source_label) + '" data-view="' + html.escape(diag_label) + '" data-log-filter="' + html.escape(filter_label) + '"' if agent_log_async else ""}>{html.escape(log_text)}</pre>
         <div class="button-row">
-          <form method="get" action="/"><input type="hidden" name="view" value="overview"><input type="hidden" name="diag_view" value="{html.escape(diag_label)}"><input type="hidden" name="log_filter" value="{html.escape(filter_label)}"><input type="hidden" name="log_source" value="{html.escape(source_label)}"><button type="submit">Refresh</button></form>
-          {("<form method='get' action='/' style='margin-left:auto;'><input type='hidden' name='view' value='overview'><input type='hidden' name='diag_view' value='" + html.escape(diag_label) + "'><input type='hidden' name='log_filter' value='" + html.escape(filter_label) + "'><input type='hidden' name='log_source' value='" + html.escape(source_label) + "'><input type='hidden' name='diagnose' value='1'><button type='submit'>Diagnose connection</button></form>") if source_label != "local" else ""}
+          <form method="get" action="/"><input type="hidden" name="view" value="overview"><input type="hidden" name="diag_view" value="{html.escape(diag_label)}"><input type="hidden" name="log_filter" value="{html.escape(filter_label)}"><input type="hidden" name="source" value="{html.escape(source_label)}"><button type="submit">Refresh</button></form>
+          {("<form method='get' action='/' style='margin-left:auto;'><input type='hidden' name='view' value='overview'><input type='hidden' name='diag_view' value='" + html.escape(diag_label) + "'><input type='hidden' name='log_filter' value='" + html.escape(filter_label) + "'><input type='hidden' name='source' value='" + html.escape(source_label) + "'><input type='hidden' name='diagnose' value='1'><button type='submit'>Diagnose connection</button></form>") if source_label != "local" else ""}
           {"<form method='post' action='/clear-logs'><button type='submit'>Clear logs</button></form>" if diag_label == "logs" else ""}
           {"<form method='post' action='/clear-task-status'><button type='submit'>Clear task data</button></form>" if diag_label == "task" else ""}
           {"<form method='post' action='/clear-cache'><button type='submit'>Clear cache</button></form>" if diag_label == "cache" else ""}
@@ -4983,7 +5093,7 @@ def _render_setup_html(
   </style>
 </head>
 <body data-ui-view="{html.escape(ui_view)}" data-diag-view="{html.escape(diag_label)}" data-log-filter="{html.escape(filter_label)}" data-log-source="{html.escape(source_label)}" data-form-error="{('1' if error and modal_open else '0')}">
-  <div class="container">
+  <div class="container" data-source="{html.escape(source_label)}">
     <div class="card">
       <div class="brand-head">
         <div class="top-actions">
@@ -5096,7 +5206,7 @@ def _render_setup_html(
         qs.set("view", uiView);
         qs.set("diag_view", diagView);
         qs.set("log_filter", logFilter);
-        qs.set("log_source", logSource);
+        qs.set("source", logSource);
         var canonicalPath = "/?" + qs.toString();
         try {{
           if (window.location.pathname !== "/" || window.location.search !== ("?" + qs.toString())) {{
@@ -5144,7 +5254,7 @@ def _render_setup_html(
         postForms.forEach(function(form) {{ ensureUiViewField(form); }});
         // Ensure source chips (Local, agent names) navigate reliably when clicked (handles subpath + edge cases)
         document.addEventListener("click", function(ev) {{
-          var a = ev.target && ev.target.closest ? ev.target.closest("a.chip[href*='log_source']") : null;
+          var a = ev.target && ev.target.closest ? ev.target.closest("a.chip[href*='source=']") : null;
           if (a && a.getAttribute("href")) {{
             ev.preventDefault();
             window.location.href = a.getAttribute("href");
@@ -5690,7 +5800,9 @@ def _render_setup_html(
 
       async function refreshLive() {{
         try {{
-          var r = await fetch("/status-json", {{ cache: "no-store" }});
+          var srcEl = document.querySelector(".container[data-source]");
+          var activeSource = (srcEl && srcEl.getAttribute("data-source")) ? srcEl.getAttribute("data-source") : "local";
+          var r = await fetch("/status-json?source=" + encodeURIComponent(activeSource), {{ cache: "no-store" }});
           if (!r.ok) return;
           var data = await r.json();
           applyLiveSnapshot(data);
@@ -6597,7 +6709,9 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 self._redirect("/auth/login")
                 return
             if parsed.path == "/status-json":
-                self._reply_json(_build_live_snapshot(), 200)
+                qs = parse_qs(parsed.query)
+                source_ctx = (qs.get("source", ["local"])[0] or "local").strip()
+                self._reply_json(_build_live_snapshot_for_source(source_ctx), 200)
                 return
             if parsed.path == "/api/agent-diag":
                 qs = parse_qs(parsed.query)
@@ -6634,7 +6748,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
             diag_view = (qs.get("diag_view", ["logs"])[0] or "logs").strip().lower()
             ui_view = (qs.get("view", ["overview"])[0] or "overview").strip().lower()
             highlight = (qs.get("highlight", [""])[0] or "").strip().lower()
-            log_source = (qs.get("log_source", ["local"])[0] or "local").strip()
+            source_ctx = (qs.get("source", [qs.get("log_source", ["local"])[0]])[0] or "local").strip()
             diagnose = (qs.get("diagnose", ["0"])[0] or "0").strip().lower() in ("1", "true", "yes")
             if highlight not in ("smart", "storage", "ping", "port", "dns", "backup"):
                 highlight = ""
@@ -6644,7 +6758,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     diag_view=diag_view,
                     ui_view=ui_view,
                     highlight_channel=highlight,
-                    log_source=log_source,
+                    log_source=source_ctx,
                     diagnose_agent=diagnose,
                     ssl_warning=ssl_warning,
                 )
