@@ -114,6 +114,7 @@ BRAND_LOGO_URL = "https://www.easysystems.ch/img/logo-blue.png"
 BRAND_FAVICON_URL = "https://www.easysystems.ch/Themes/essys_v2-v1_19-08-2025/favicon/android-icon-96x96.png"
 BRAND_AUTHOR = "Konrad von Burg"
 BRAND_COPYRIGHT = "Copyright (c) 2026"
+REPO_URL = "https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools"
 PRODUCT_DESC = (
     "Checks Unix host SMART and storage health, provides guided elevated-access setup and diagnostics, "
     "and pushes monitor status to Uptime Kuma."
@@ -160,6 +161,7 @@ def _default_auth_state() -> Dict[str, Any]:
         "lockout_until": 0,
         "last_login_ip": "",
         "last_login_at": 0,
+        "login_history": [],
         "session_secret": secrets.token_hex(32),
     }
 
@@ -178,8 +180,16 @@ def _load_auth_state() -> Dict[str, Any]:
     except Exception:
         data = _default_auth_state()
         _save_auth_state(data)
+    changed = False
+    defaults = _default_auth_state()
+    for k, v in defaults.items():
+        if k not in data:
+            data[k] = v
+            changed = True
     if "session_secret" not in data or not str(data.get("session_secret", "")).strip():
         data["session_secret"] = secrets.token_hex(32)
+        changed = True
+    if changed:
         _save_auth_state(data)
     return data
 
@@ -383,6 +393,76 @@ def _detect_primary_server_ip() -> str:
         if ":" in ip and ip != "::1":
             return ip
     return candidates[0] if candidates else "n/a"
+
+
+def _list_system_ips() -> List[str]:
+    ips: List[str] = []
+    rc, out = _run_cmd(["ip", "-o", "addr", "show"], timeout_sec=5)
+    if rc == 0 and out.strip():
+        for ln in out.splitlines():
+            m = re.search(r"\sinet6?\s+([0-9a-fA-F\.:]+)/\d+", ln)
+            if not m:
+                continue
+            ip = m.group(1).strip()
+            if ip and ip not in ips:
+                ips.append(ip)
+        if ips:
+            return ips
+    try:
+        host = socket.gethostname()
+        for info in socket.getaddrinfo(host, None):
+            if len(info) < 5 or not info[4]:
+                continue
+            ip = str(info[4][0]).strip()
+            if ip and ip not in ips:
+                ips.append(ip)
+    except Exception:
+        pass
+    return ips
+
+
+def _ntp_sync_details() -> Dict[str, str]:
+    result = {"synced": "unknown", "service": "unknown", "source": "unknown", "detail": "No NTP details available"}
+    rc, out = _run_cmd(["timedatectl", "show", "-p", "NTPSynchronized", "-p", "NTPService", "-p", "SystemClockSynchronized"], timeout_sec=5)
+    if rc == 0 and out.strip():
+        values: Dict[str, str] = {}
+        for ln in out.splitlines():
+            if "=" in ln:
+                k, v = ln.split("=", 1)
+                values[k.strip()] = v.strip()
+        ntp_sync = values.get("NTPSynchronized", values.get("SystemClockSynchronized", "unknown")).lower()
+        result["synced"] = "yes" if ntp_sync == "yes" else ("no" if ntp_sync == "no" else "unknown")
+        result["service"] = values.get("NTPService", "unknown") or "unknown"
+    for cmd in (["chronyc", "sources", "-n"], ["ntpq", "-pn"]):
+        rc2, out2 = _run_cmd(cmd, timeout_sec=6)
+        if rc2 != 0 or not out2.strip():
+            continue
+        lines = [ln.strip() for ln in out2.splitlines() if ln.strip()]
+        src = ""
+        for ln in lines:
+            if ln.startswith(("^*", "*", "+", "^+")):
+                parts = ln.split()
+                if len(parts) >= 2:
+                    src = parts[1]
+                    break
+        if not src and len(lines) > 2:
+            parts = lines[2].split()
+            if len(parts) >= 2:
+                src = parts[1]
+        if src:
+            result["source"] = src
+            result["detail"] = f"Synced={result['synced']} | Service={result['service']} | Source={src}"
+            return result
+    result["detail"] = f"Synced={result['synced']} | Service={result['service']} | Source={result['source']}"
+    return result
+
+
+def _append_login_event(auth: Dict[str, Any], ip: str, state: str) -> None:
+    events = auth.get("login_history", [])
+    if not isinstance(events, list):
+        events = []
+    events.append({"ts": int(time.time()), "ip": str(ip or "unknown"), "state": str(state or "unknown")})
+    auth["login_history"] = events[-20:]
 
 
 def get_config_path() -> Path:
@@ -4506,10 +4586,26 @@ def _render_setup_html(
     auth_state = _load_auth_state()
     recovery_unused = _count_unused_recovery(auth_state)
     server_ip = _detect_primary_server_ip()
+    all_ips = _list_system_ips()
+    ntp_info = _ntp_sync_details()
+    peer_last_sync = int(cfg.get("last_peer_sync", 0) or 0)
+    peer_last_sync_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(peer_last_sync)) if peer_last_sync else "never"
     now_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     last_login_ip = str(auth_state.get("last_login_ip", "") or "n/a")
     last_login_at = int(auth_state.get("last_login_at", 0) or 0)
     last_login_at_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_login_at)) if last_login_at else "never"
+    login_history = auth_state.get("login_history", []) if isinstance(auth_state.get("login_history", []), list) else []
+    login_lines: List[str] = []
+    for ev in reversed(login_history[-8:]):
+        if not isinstance(ev, dict):
+            continue
+        ts = int(ev.get("ts", 0) or 0)
+        ts_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts else "unknown"
+        ip = str(ev.get("ip", "unknown") or "unknown")
+        state = str(ev.get("state", "unknown") or "unknown")
+        login_lines.append(f"{ts_text} | {ip} | {state}")
+    if not login_lines:
+        login_lines = ["No login history recorded yet."]
 
     elevated_ok, elevated_msg = get_smart_helper_status()
     elevated_css = "ok" if elevated_ok else "err"
@@ -4761,7 +4857,7 @@ def _render_setup_html(
             src_chips.append(
                 f"<a class='chip {'active' if source_label==sid else ''}' "
                 f"href='?{q_base}&amp;source={html.escape(sid)}'>"
-                f"{html.escape(sname)}{' (Remote)' if sid != 'local' else ' (Local)'}"
+                f"{html.escape(sname)}"
                 "</a>"
             )
         source_tabs_html = (
@@ -4851,14 +4947,27 @@ def _render_setup_html(
         if source_is_remote
         else f"Viewing local source: {source_name}."
     )
+    update_curl_cmd = (
+        "curl -sSL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-monitor/install.sh | sudo bash"
+    )
+    ip_list_text = "\n".join(all_ips) if all_ips else "No IP addresses detected."
+    login_history_text = "\n".join(login_lines)
     server_info_card_html = (
         "<div class='server-info-grid'>"
-        f"<div class='server-info-item'><span class='muted'>Name</span><strong>{html.escape(local_source_name)}</strong></div>"
-        f"<div class='server-info-item'><span class='muted'>IP</span><strong>{html.escape(server_ip)}</strong></div>"
-        f"<div class='server-info-item'><span class='muted'>Time</span><strong>{html.escape(now_text)}</strong></div>"
-        f"<div class='server-info-item'><span class='muted'>Package Version</span><strong>{html.escape(VERSION)}</strong></div>"
-        f"<div class='server-info-item'><span class='muted'>Last Login Source IP</span><strong>{html.escape(last_login_ip)}</strong></div>"
-        f"<div class='server-info-item'><span class='muted'>Last Login Time</span><strong>{html.escape(last_login_at_text)}</strong></div>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='name'><span class='muted'>Name</span><strong>{html.escape(local_source_name)}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='ip'><span class='muted'>IP</span><strong>{html.escape(server_ip)}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='time'><span class='muted'>Time</span><strong>{html.escape(now_text)}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='package'><span class='muted'>Package Version</span><strong>{html.escape(VERSION)}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='login'><span class='muted'>Last Login Source IP</span><strong>{html.escape(last_login_ip)}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='login-time'><span class='muted'>Last Login Time</span><strong>{html.escape(last_login_at_text)}</strong></button>"
+        "</div>"
+        "<div class='server-action-panels'>"
+        f"<div class='card server-action-panel' data-server-panel='name'><h4>Change server name</h4><form method='post' action='/settings/save-instance-name'><label>Instance Name</label><input name='instance_name' value='{html.escape(str(cfg.get('instance_name', '') or ''))}' placeholder='e.g. HQ-NAS'><div class='button-row'><button type='submit'>Save name</button></div></form></div>"
+        f"<div class='card server-action-panel' data-server-panel='ip'><h4>System IP addresses</h4><pre>{html.escape(ip_list_text)}</pre></div>"
+        f"<div class='card server-action-panel' data-server-panel='time'><h4>Time sync details</h4><pre>Current time: {html.escape(now_text)}\nLast peer sync: {html.escape(peer_last_sync_text)}\nNTP synced: {html.escape(ntp_info.get('synced', 'unknown'))}\nNTP service: {html.escape(ntp_info.get('service', 'unknown'))}\nNTP source: {html.escape(ntp_info.get('source', 'unknown'))}\n\n{html.escape(ntp_info.get('detail', ''))}</pre></div>"
+        f"<div class='card server-action-panel' data-server-panel='package'><h4>Package update</h4><div class='button-row'><a class='btn-inline' href='{html.escape(REPO_URL)}' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a></div><pre>{html.escape(update_curl_cmd)}</pre><div class='muted'>{html.escape(source_scope_text)}</div></div>"
+        f"<div class='card server-action-panel' data-server-panel='login'><h4>Recent login events (IP + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
+        f"<div class='card server-action-panel' data-server-panel='login-time'><h4>Recent login events (time + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
         "</div>"
     )
     overview_view_html = f"""
@@ -5091,6 +5200,13 @@ def _render_setup_html(
     .source-tabs {{ justify-content: center; }}
     .server-info-grid {{ display:grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap:8px; }}
     .server-info-item {{ border:1px solid var(--border); border-radius:10px; background:var(--card-soft); padding:10px; display:flex; flex-direction:column; gap:4px; }}
+    .server-info-action {{ text-align:left; width:100%; cursor:pointer; transition:all .16s ease; }}
+    .server-info-action:hover {{ border-color:#4c8ff6; box-shadow:0 0 0 1px rgba(76,143,246,.35) inset; transform: translateY(-1px); }}
+    .server-action-panels {{ margin-top:10px; }}
+    .server-action-panel {{ display:none; border-color:rgba(76,143,246,.3); }}
+    .server-action-panel.open {{ display:block; }}
+    .btn-inline {{ display:inline-block; padding:9px 14px; border:1px solid #36517a; border-radius:8px; text-decoration:none; color:#c8dbf8; font-weight:600; }}
+    .btn-inline:hover {{ background: rgba(54,81,122,.25); }}
     .server-info-item strong {{ font-size:13px; color:#d9e8ff; }}
     .modal-backdrop {{ position: fixed; inset: 0; background: rgba(5,10,20,.74); display: none; align-items: center; justify-content: center; z-index: 2000; }}
     .modal-backdrop.open {{ display: flex; }}
@@ -5303,6 +5419,20 @@ def _render_setup_html(
           if (a && a.getAttribute("href")) {{
             ev.preventDefault();
             window.location.href = a.getAttribute("href");
+          }}
+        }}, true);
+        document.addEventListener("click", function(ev) {{
+          var b = ev.target && ev.target.closest ? ev.target.closest(".server-info-action[data-server-action]") : null;
+          if (!b) return;
+          var key = b.getAttribute("data-server-action");
+          var panel = document.querySelector(".server-action-panel[data-server-panel='" + key + "']");
+          if (!panel) return;
+          document.querySelectorAll(".server-action-panel.open").forEach(function(p) {{
+            if (p !== panel) p.classList.remove("open");
+          }});
+          panel.classList.toggle("open");
+          if (panel.classList.contains("open")) {{
+            panel.scrollIntoView({{ behavior: "smooth", block: "nearest" }});
           }}
         }}, true);
         // Intercept POST forms: fetch and update page without reload (except auth, danger, exports)
@@ -7498,6 +7628,8 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     pwd = (form.get("password", [""])[0] or "").strip()
                     if not check_password_hash(str(auth.get("password_hash", "")), pwd):
                         _register_auth_failure(auth)
+                        _append_login_event(auth, self._client_source_ip(), "failed-password")
+                        _save_auth_state(auth)
                         self._reply_html(_render_auth_login_page(error="Invalid password.", ssl_warning=ssl_warning))
                         return
                     _register_auth_success(auth)
@@ -7517,11 +7649,14 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     token = (form.get("token", [""])[0] or "").strip()
                     if not _verify_totp_token(str(auth.get("totp_secret", "")), token):
                         _register_auth_failure(auth)
+                        _append_login_event(auth, self._client_source_ip(), "failed-2fa")
+                        _save_auth_state(auth)
                         self._reply_html(_render_auth_verify_page(error="Invalid authenticator code.", ssl_warning=ssl_warning))
                         return
                     _register_auth_success(auth)
                     auth["last_login_ip"] = self._client_source_ip()
                     auth["last_login_at"] = int(time.time())
+                    _append_login_event(auth, auth["last_login_ip"], "success-2fa")
                     _save_auth_state(auth)
                     sess = _sign_payload(
                         {"auth": True, "exp": int(time.time()) + AUTH_SESSION_TTL_SEC},
@@ -7542,11 +7677,14 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     code = (form.get("recovery_code", [""])[0] or "").strip()
                     if not _consume_recovery_code(auth, code):
                         _register_auth_failure(auth)
+                        _append_login_event(auth, self._client_source_ip(), "failed-recovery")
+                        _save_auth_state(auth)
                         self._reply_html(_render_auth_recovery_page(error="Invalid or already used recovery code.", ssl_warning=ssl_warning))
                         return
                     _register_auth_success(auth)
                     auth["last_login_ip"] = self._client_source_ip()
                     auth["last_login_at"] = int(time.time())
+                    _append_login_event(auth, auth["last_login_ip"], "success-recovery")
                     _save_auth_state(auth)
                     sess = _sign_payload(
                         {"auth": True, "exp": int(time.time()) + AUTH_SESSION_TTL_SEC},

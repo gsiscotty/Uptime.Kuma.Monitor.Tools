@@ -395,19 +395,13 @@ fi
 chmod 700 "${TARGET}" "${UNINSTALL_TARGET}"
 info "Installed to ${INSTALL_DIR}"
 
-echo -e "Install smartctl dependency (smartmontools)? (Y/n): \c"
-read_input INSTALL_SMART || true
-if [[ ! "${INSTALL_SMART:-Y}" =~ ^[Nn]$ ]]; then
+if [ "${EXISTING_INSTALL}" -eq 1 ]; then
+    info "Reinstall detected: auto-installing dependencies without prompts."
     if install_smartmontools; then
         info "smartmontools installed."
     else
         warn "Could not auto-install smartmontools. Install manually for SMART checks."
     fi
-fi
-
-echo -e "Install Python UI/auth dependencies (pyotp, qrcode, pillow, werkzeug, cryptography)? (Y/n): \c"
-read_input INSTALL_PY_DEPS || true
-if [[ ! "${INSTALL_PY_DEPS:-Y}" =~ ^[Nn]$ ]]; then
     if install_python_deps; then
         info "Python dependencies installed."
     else
@@ -415,6 +409,29 @@ if [[ ! "${INSTALL_PY_DEPS:-Y}" =~ ^[Nn]$ ]]; then
         warn "Manual fallback:"
         warn "  sudo apt install python3-pyotp python3-qrcode python3-pil python3-werkzeug python3-cryptography"
         warn "  or: sudo python3 -m pip install pyotp qrcode pillow werkzeug cryptography --break-system-packages"
+    fi
+else
+    echo -e "Install smartctl dependency (smartmontools)? (Y/n): \c"
+    read_input INSTALL_SMART || true
+    if [[ ! "${INSTALL_SMART:-Y}" =~ ^[Nn]$ ]]; then
+        if install_smartmontools; then
+            info "smartmontools installed."
+        else
+            warn "Could not auto-install smartmontools. Install manually for SMART checks."
+        fi
+    fi
+
+    echo -e "Install Python UI/auth dependencies (pyotp, qrcode, pillow, werkzeug, cryptography)? (Y/n): \c"
+    read_input INSTALL_PY_DEPS || true
+    if [[ ! "${INSTALL_PY_DEPS:-Y}" =~ ^[Nn]$ ]]; then
+        if install_python_deps; then
+            info "Python dependencies installed."
+        else
+            warn "Could not install all Python dependencies automatically (apt + pip fallback attempted)."
+            warn "Manual fallback:"
+            warn "  sudo apt install python3-pyotp python3-qrcode python3-pil python3-werkzeug python3-cryptography"
+            warn "  or: sudo python3 -m pip install pyotp qrcode pillow werkzeug cryptography --break-system-packages"
+        fi
     fi
 fi
 
