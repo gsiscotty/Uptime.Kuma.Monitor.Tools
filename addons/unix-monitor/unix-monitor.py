@@ -158,6 +158,8 @@ def _default_auth_state() -> Dict[str, Any]:
         "recovery_hashes": [],
         "failed_attempts": 0,
         "lockout_until": 0,
+        "last_login_ip": "",
+        "last_login_at": 0,
         "session_secret": secrets.token_hex(32),
     }
 
@@ -359,6 +361,28 @@ def _count_unused_recovery(auth: Dict[str, Any]) -> int:
     if not isinstance(hashes, list):
         return 0
     return len([x for x in hashes if isinstance(x, dict) and not bool(x.get("used"))])
+
+
+def _detect_primary_server_ip() -> str:
+    """Best-effort primary local IP for UI display."""
+    candidates: List[str] = []
+    try:
+        host = socket.gethostname()
+        for info in socket.getaddrinfo(host, None):
+            if len(info) < 5 or not info[4]:
+                continue
+            ip = str(info[4][0])
+            if ip and ip not in candidates:
+                candidates.append(ip)
+    except Exception:
+        pass
+    for ip in candidates:
+        if "." in ip and not ip.startswith("127."):
+            return ip
+    for ip in candidates:
+        if ":" in ip and ip != "::1":
+            return ip
+    return candidates[0] if candidates else "n/a"
 
 
 def get_config_path() -> Path:
@@ -4481,6 +4505,11 @@ def _render_setup_html(
     automation_status = _scheduler_status_text(cfg)
     auth_state = _load_auth_state()
     recovery_unused = _count_unused_recovery(auth_state)
+    server_ip = _detect_primary_server_ip()
+    now_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    last_login_ip = str(auth_state.get("last_login_ip", "") or "n/a")
+    last_login_at = int(auth_state.get("last_login_at", 0) or 0)
+    last_login_at_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_login_at)) if last_login_at else "never"
 
     elevated_ok, elevated_msg = get_smart_helper_status()
     elevated_css = "ok" if elevated_ok else "err"
@@ -4737,7 +4766,6 @@ def _render_setup_html(
             )
         source_tabs_html = (
             "<div class='chip-row source-tabs' style='margin-top:8px;'>"
-            "<span class='muted' style='font-size:11px;white-space:nowrap;'>Source context:</span>"
             + "".join(src_chips)
             + "</div>"
         )
@@ -4818,16 +4846,29 @@ def _render_setup_html(
         + (source_tabs_html if ui_view == "overview" else "")
         + "</div>"
     )
-    overview_context_html = (
-        f"<div class='err' style='margin-bottom:10px;'>Viewing remote source context: <b>{html.escape(source_name)}</b>. "
-        "Gauges and diagnostics are scoped to this source.</div>"
+    source_scope_text = (
+        f"Viewing remote source: {source_name} (gauges and diagnostics are scoped to this source)."
         if source_is_remote
-        else f"<div class='ok' style='margin-bottom:10px;'>Viewing local source context: <b>{html.escape(source_name)}</b>.</div>"
+        else f"Viewing local source: {source_name}."
+    )
+    server_info_card_html = (
+        "<div class='server-info-grid'>"
+        f"<div class='server-info-item'><span class='muted'>Name</span><strong>{html.escape(local_source_name)}</strong></div>"
+        f"<div class='server-info-item'><span class='muted'>IP</span><strong>{html.escape(server_ip)}</strong></div>"
+        f"<div class='server-info-item'><span class='muted'>Time</span><strong>{html.escape(now_text)}</strong></div>"
+        f"<div class='server-info-item'><span class='muted'>Package Version</span><strong>{html.escape(VERSION)}</strong></div>"
+        f"<div class='server-info-item'><span class='muted'>Last Login Source IP</span><strong>{html.escape(last_login_ip)}</strong></div>"
+        f"<div class='server-info-item'><span class='muted'>Last Login Time</span><strong>{html.escape(last_login_at_text)}</strong></div>"
+        "</div>"
     )
     overview_view_html = f"""
       <div class="card">
+        <h3>Current Server <span class="badge muted-badge">{html.escape(local_source_name)}</span></h3>
+        <div class="muted" style="margin-bottom:8px;">{html.escape(source_scope_text)}</div>
+        {server_info_card_html}
+      </div>
+      <div class="card">
         <h3>Monitoring Overview</h3>
-        {overview_context_html}
         <div class="overview-grid">{overview_html}</div>
       </div>
       <div class="card">
@@ -5047,6 +5088,10 @@ def _render_setup_html(
     .chip.active {{ background: linear-gradient(180deg, rgba(87,156,255,.35), rgba(47,128,237,.28)); border-color: #67abff; color: #eaf4ff; box-shadow: 0 0 0 1px rgba(103,171,255,.2) inset; }}
     .chip-row {{ display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 10px; margin-bottom: 4px; }}
     .nav-tabs {{ justify-content: center; gap: 12px; }}
+    .source-tabs {{ justify-content: center; }}
+    .server-info-grid {{ display:grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap:8px; }}
+    .server-info-item {{ border:1px solid var(--border); border-radius:10px; background:var(--card-soft); padding:10px; display:flex; flex-direction:column; gap:4px; }}
+    .server-info-item strong {{ font-size:13px; color:#d9e8ff; }}
     .modal-backdrop {{ position: fixed; inset: 0; background: rgba(5,10,20,.74); display: none; align-items: center; justify-content: center; z-index: 2000; }}
     .modal-backdrop.open {{ display: flex; }}
     .modal {{ width: min(640px, 96vw); max-height: 92vh; overflow: auto; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }}
@@ -6272,6 +6317,20 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
     class Handler(BaseHTTPRequestHandler):
         _tls_available = False
 
+        def _client_source_ip(self) -> str:
+            xff = str(self.headers.get("X-Forwarded-For", "") or "").strip()
+            if xff:
+                first = xff.split(",")[0].strip()
+                if first:
+                    return first
+            xrip = str(self.headers.get("X-Real-IP", "") or "").strip()
+            if xrip:
+                return xrip
+            try:
+                return str(self.client_address[0] or "").strip() or "unknown"
+            except Exception:
+                return "unknown"
+
         def _redirect_http_to_https(self) -> bool:
             """If TLS is active but this request arrived over plain HTTP, redirect to HTTPS.
             Returns True if redirect was sent (caller should return), False otherwise.
@@ -7461,6 +7520,9 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                         self._reply_html(_render_auth_verify_page(error="Invalid authenticator code.", ssl_warning=ssl_warning))
                         return
                     _register_auth_success(auth)
+                    auth["last_login_ip"] = self._client_source_ip()
+                    auth["last_login_at"] = int(time.time())
+                    _save_auth_state(auth)
                     sess = _sign_payload(
                         {"auth": True, "exp": int(time.time()) + AUTH_SESSION_TTL_SEC},
                         str(auth.get("session_secret", "")),
@@ -7483,6 +7545,9 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                         self._reply_html(_render_auth_recovery_page(error="Invalid or already used recovery code.", ssl_warning=ssl_warning))
                         return
                     _register_auth_success(auth)
+                    auth["last_login_ip"] = self._client_source_ip()
+                    auth["last_login_at"] = int(time.time())
+                    _save_auth_state(auth)
                     sess = _sign_payload(
                         {"auth": True, "exp": int(time.time()) + AUTH_SESSION_TTL_SEC},
                         str(auth.get("session_secret", "")),
