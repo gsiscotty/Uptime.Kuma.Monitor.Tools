@@ -16,14 +16,14 @@ Full-featured monitor for Unix: mount health, SMART, storage, ping, port, DNS, b
 
 ### Synology Monitor
 
-Monitors Synology NAS storage/RAID and SMART health. DSM package available.
+Monitors Synology NAS storage/RAID and SMART health.
 
 - Docs: [addons/synology-monitor/README.md](synology-monitor/README.md)
 - Community package: [addons/synology-monitor/community-package/README.md](synology-monitor/community-package/README.md)
-- Install:
-  ```bash
-  curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/synology-monitor/install.sh | bash
-  ```
+- **Install options:**
+  1. Script: `curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/synology-monitor/install.sh | bash`
+  2. Package Center: add source `repo/packages.json` → install from Package Center
+  3. Package download: [Latest](https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools/releases/latest/download/synology-monitor-basic.spk) | [All versions](https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools/releases)
 
 ## Deprecated (migrate to unix-monitor)
 

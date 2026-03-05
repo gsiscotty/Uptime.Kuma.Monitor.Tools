@@ -19,17 +19,36 @@ This addon provides:
 
 ---
 
-## Quick Install
+## Installation
+
+### 1) Script install (curl / wget)
 
 ```bash
 curl -sL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/synology-monitor/install.sh | bash
 ```
 
-Or:
+Or with wget:
 
 ```bash
 wget -qO- https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/synology-monitor/install.sh | bash
 ```
+
+### 2) Package via Package Center (recommended)
+
+Add the package source in DSM Package Center, then install or update from there:
+
+1. DSM → Package Center → Settings → Package Sources → Add
+2. URL: `https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/synology-monitor/community-package/repo/packages.json`
+3. Refresh and install **Synology Monitor** from your source
+
+Auto-updates when you refresh Package Center.
+
+### 3) Package (manual download)
+
+- **[Latest release](https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools/releases/latest/download/synology-monitor-basic.spk)** — always points to the newest version
+- **[All releases](https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools/releases)** — download a specific version
+
+Then: DSM → Package Center → Manual Install → select the `.spk` file.
 
 ---
 

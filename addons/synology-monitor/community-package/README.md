@@ -54,6 +54,11 @@ Release asset URL expected by the package source:
 https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools/releases/latest/download/synology-monitor-basic.spk
 ```
 
+### Direct download (manual install)
+
+- **Latest:** [synology-monitor-basic.spk](https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools/releases/latest/download/synology-monitor-basic.spk)
+- **All versions:** [Releases](https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools/releases)
+
 Important: this GitHub page URL is only for browsing files and will NOT work as DSM package source:
 
 ```text
