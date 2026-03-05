@@ -5363,8 +5363,8 @@ def _render_setup_html(
     .server-action-panel[data-server-panel='package'] {{ text-align:left; }}
     .autoupdate-row {{ margin-bottom:12px; }}
     .autoupdate-form {{ margin:0; }}
-    .autoupdate-label {{ display:block; cursor:pointer; line-height:1.5; font-size:13px; }}
-    .autoupdate-label input[type="checkbox"] {{ vertical-align:middle; margin:0 8px 0 0; accent-color:#2f80ed; }}
+    .autoupdate-label {{ display:flex; flex-direction:row; align-items:center; gap:8px; cursor:pointer; font-size:13px; flex-wrap:nowrap; }}
+    .autoupdate-label input[type="checkbox"] {{ flex-shrink:0; order:-1; accent-color:#2f80ed; }}
     .server-action-panel[data-server-panel='package'] .button-row {{ justify-content:flex-start; }}
     .btn-inline {{ display:inline-block; padding:9px 14px; border:1px solid #36517a; border-radius:8px; text-decoration:none; color:#c8dbf8; font-weight:600; }}
     .btn-inline:hover {{ background: rgba(54,81,122,.25); }}
