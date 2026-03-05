@@ -5081,12 +5081,12 @@ def _render_setup_html(
     if not source_is_remote:
         autoupdate_form = (
             "<div class='package-update-row'>"
-            "<form method='post' action='/settings/save-autoupdate'>"
+            "<form method='post' action='/settings/save-autoupdate' style='display:block;'>"
             "<input type='hidden' name='autoupdate_enabled' value='0'>"
-            f"<label style='display:inline-flex;align-items:center;gap:6px;cursor:pointer;'>"
+            "<label class='autoupdate-label'>"
             f"<input type='checkbox' name='autoupdate_enabled' value='1'"
             + (" checked" if autoupdate_enabled else "")
-            + " onchange='this.form.submit()'> Enable autoupdate (check on each visit, apply if newer)</label></form></div>"
+            + " onchange='this.form.submit()'> <span>Enable autoupdate (check on each visit, apply if newer)</span></label></form></div>"
         )
         package_update_btns = autoupdate_form
         if has_update_helper:
@@ -5362,6 +5362,9 @@ def _render_setup_html(
     .server-action-panel.open {{ display:block; }}
     .server-action-panel[data-server-panel='package'] {{ text-align:left; }}
     .server-action-panel[data-server-panel='package'] .package-update-row {{ display:block; width:100%; text-align:left; margin-bottom:8px; }}
+    .autoupdate-label {{ display:flex; align-items:flex-start; gap:8px; cursor:pointer; line-height:1.4; }}
+    .autoupdate-label input[type="checkbox"] {{ flex-shrink:0; margin-top:2px; accent-color:#2f80ed; }}
+    .server-action-panel[data-server-panel='package'] .button-row {{ justify-content:flex-start; }}
     .btn-inline {{ display:inline-block; padding:9px 14px; border:1px solid #36517a; border-radius:8px; text-decoration:none; color:#c8dbf8; font-weight:600; }}
     .btn-inline:hover {{ background: rgba(54,81,122,.25); }}
     .server-info-item strong {{ font-size:13px; color:#d9e8ff; }}
