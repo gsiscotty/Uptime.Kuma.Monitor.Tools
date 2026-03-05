@@ -1446,7 +1446,8 @@ def _trigger_agent_update(cfg: Dict[str, Any], peer_id: str) -> Tuple[Optional[s
                 return None, f"Invalid response: {body[:200]}"
         try:
             err = json.loads(body)
-            return None, str(err.get("error", body))[:500]
+            msg = str(err.get("error", body))[:500]
+            return None, f"HTTP {status}: {msg}"
         except (json.JSONDecodeError, ValueError):
             return None, f"HTTP {status}: {body[:500]}"
     except Exception as e:
@@ -5268,13 +5269,13 @@ def _render_setup_html(
             var data = null;
             try {{ data = rawText ? JSON.parse(rawText) : null; }} catch (e) {{}}
             var errMsg = (data && data.error) ? String(data.error) : "Failed to start update";
-            var diag = "HTTP " + r.status + " | " + errMsg;
-            if (rawText && rawText.length > 0 && rawText.length < 500) diag += " | Response: " + rawText.replace(/\\n/g, " ").trim();
-            else if (rawText && rawText.length >= 500) diag += " | Response: " + rawText.substring(0, 200) + "...";
-            var diagAttr = (diag || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            var diagLines = ["HTTP " + r.status, "Error: " + errMsg];
+            if (data && data.diagnostic) diagLines.push("", data.diagnostic);
+            else if (rawText && rawText.length > 0) diagLines.push("", "Response: " + (rawText.length < 400 ? rawText.replace(/\\n/g, " ").trim() : rawText.substring(0, 300) + "..."));
+            var diagBlock = "<div style='margin-top:10px;padding:10px;background:#0b1321;border:1px solid #283852;border-radius:8px;font-size:11px;font-family:monospace;white-space:pre-wrap;word-break:break-all;max-height:180px;overflow:auto;'>" + escapeHtml(diagLines.join("\\n")) + "</div>";
             if (!r.ok || !data || data.error) {{
-              mContent.innerHTML = "<p class='err' title='" + diagAttr + "'>" + escapeHtml(errMsg) + "</p><p class='muted' style='font-size:11px;margin-top:4px;'>Hover for diagnostics</p>";
-              mContent.innerHTML += "<p><button type='button' class='close-link' onclick=\\"document.getElementById('agent-update-modal').classList.remove('open')\\">Close</button></p>";
+              mContent.innerHTML = "<p class='err'>" + escapeHtml(errMsg) + "</p>" + diagBlock;
+              mContent.innerHTML += "<p style='margin-top:12px;'><button type='button' class='close-link' onclick=\\"document.getElementById('agent-update-modal').classList.remove('open')\\">Close</button></p>";
               btn.disabled = false;
               return;
             }}
@@ -5292,10 +5293,11 @@ def _render_setup_html(
                 try {{ sraw = await sr.text(); }} catch (e) {{ sraw = String(e); }}
                 var sdata = sr.ok && sraw ? (function() {{ try {{ return JSON.parse(sraw); }} catch(e) {{ return {{}}; }} }})() : {{}};
                 if (sdata.error && !sdata.log) {{
-                  var sdiag = "HTTP " + sr.status + " | " + (sdata.error || sraw || "").toString().replace(/\\n/g, " ");
-                  var sdiagAttr = (sdiag || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-                  mContent.innerHTML = "<p class='err' title='" + sdiagAttr + "'>" + escapeHtml(sdata.error) + "</p><p class='muted' style='font-size:11px;margin-top:4px;'>Hover for diagnostics</p>";
-                  mContent.innerHTML += "<p><button type='button' class='close-link' onclick=\\"document.getElementById('agent-update-modal').classList.remove('open')\\">Close</button></p>";
+                  var sdiagLines = ["HTTP " + sr.status, "Error: " + (sdata.error || "unknown")];
+                  if (sraw && sraw.length > 0) sdiagLines.push("", "Response: " + (sraw.length < 400 ? sraw.replace(/\\n/g, " ").trim() : sraw.substring(0, 300) + "..."));
+                  var sdiagBlock = "<div style='margin-top:10px;padding:10px;background:#0b1321;border:1px solid #283852;border-radius:8px;font-size:11px;font-family:monospace;white-space:pre-wrap;word-break:break-all;max-height:180px;overflow:auto;'>" + escapeHtml(sdiagLines.join("\\n")) + "</div>";
+                  mContent.innerHTML = "<p class='err'>" + escapeHtml(sdata.error) + "</p>" + sdiagBlock;
+                  mContent.innerHTML += "<p style='margin-top:12px;'><button type='button' class='close-link' onclick=\\"document.getElementById('agent-update-modal').classList.remove('open')\\">Close</button></p>";
                   clearInterval(pollInterval);
                   btn.disabled = false;
                   return;
@@ -7787,7 +7789,19 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                         return
                     session_id, err = _trigger_agent_update(cfg, peer_id)
                     if err:
-                        self._reply_json({"error": err}, 400)
+                        peers = cfg.get("peers", []) or []
+                        target = next((p for p in peers if str(p.get("instance_id", "")) == peer_id), None)
+                        pname = str(target.get("instance_name", "") or peer_id[:8]) if target else peer_id[:8]
+                        p_url = str(target.get("url", "") or "").strip() if target else ""
+                        diag_lines = [
+                            f"Agent: {pname} ({peer_id[:16]}...)",
+                            f"URL: {p_url or '(not set)'}",
+                            f"Error: {err}",
+                        ]
+                        self._reply_json({
+                            "error": err,
+                            "diagnostic": "\n".join(diag_lines),
+                        }, 400)
                         return
                     append_ui_log(f"agent-update | triggered for {peer_id}, session {session_id}")
                     self._reply_json({"status": "started", "session_id": session_id, "peer_id": peer_id}, 202)
