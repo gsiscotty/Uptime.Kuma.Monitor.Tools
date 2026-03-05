@@ -5362,7 +5362,8 @@ def _render_setup_html(
     .server-action-panel.open {{ display:block; }}
     .server-action-panel[data-server-panel='package'] {{ text-align:left; }}
     .server-action-panel[data-server-panel='package'] .package-update-row {{ display:block; width:100%; text-align:left; margin-bottom:8px; }}
-    .autoupdate-label {{ display:flex; align-items:flex-start; gap:8px; cursor:pointer; line-height:1.4; }}
+    .server-action-panel[data-server-panel='package'] .package-update-row form {{ display:inline-block; width:auto; margin:0; }}
+    .autoupdate-label {{ display:flex; align-items:flex-start; justify-content:flex-start; gap:8px; cursor:pointer; line-height:1.4; width:fit-content; }}
     .autoupdate-label input[type="checkbox"] {{ flex-shrink:0; margin-top:2px; accent-color:#2f80ed; }}
     .server-action-panel[data-server-panel='package'] .button-row {{ justify-content:flex-start; }}
     .btn-inline {{ display:inline-block; padding:9px 14px; border:1px solid #36517a; border-radius:8px; text-decoration:none; color:#c8dbf8; font-weight:600; }}
