@@ -4626,6 +4626,7 @@ def _render_setup_html(
     highlight_channel: str = "",
     log_source: str = "local",
     diagnose_agent: bool = False,
+    open_server_panel: str = "",
 ) -> str:
     cfg = load_config()
     browser_instance_name = str(cfg.get("instance_name", "") or "").strip()
@@ -5079,14 +5080,15 @@ def _render_setup_html(
     package_update_btns = ""
     if not source_is_remote:
         autoupdate_form = (
-            "<form method='post' action='/settings/save-autoupdate' style='display:block;margin-bottom:8px;text-align:left;'>"
+            "<div class='package-update-row'>"
+            "<form method='post' action='/settings/save-autoupdate'>"
             "<input type='hidden' name='autoupdate_enabled' value='0'>"
-            f"<label style='display:flex;align-items:center;gap:6px;cursor:pointer;justify-content:flex-start;'>"
+            f"<label style='display:inline-flex;align-items:center;gap:6px;cursor:pointer;'>"
             f"<input type='checkbox' name='autoupdate_enabled' value='1'"
             + (" checked" if autoupdate_enabled else "")
-            + " onchange='this.form.submit()'> Enable autoupdate (check on each visit, apply if newer)</label></form>"
+            + " onchange='this.form.submit()'> Enable autoupdate (check on each visit, apply if newer)</label></form></div>"
         )
-        package_update_btns = "<div style='margin-bottom:8px;text-align:left;'>" + autoupdate_form + "</div>"
+        package_update_btns = autoupdate_form
         if has_update_helper:
             package_update_btns += "<div class='button-row' style='margin-bottom:8px;'><form method='post' action='/self-update' style='display:inline;' onsubmit='return confirm(\"Update to latest version? Config and data will be preserved. If update fails, previous version is restored.\");'><button type='submit' class='btn-inline'>Update now</button></form>"
         if has_backup and has_update_helper:
@@ -5108,7 +5110,7 @@ def _render_setup_html(
         f"<div class='card server-action-panel' data-server-panel='name'><h4>Change server name</h4><form method='post' action='/settings/save-instance-name'><label>Instance Name</label><input name='instance_name' value='{html.escape(str(cfg.get('instance_name', '') or ''))}' placeholder='e.g. HQ-NAS'><div class='button-row'><button type='submit'>Save name</button></div></form></div>"
         f"<div class='card server-action-panel' data-server-panel='ip'><h4>System IP addresses</h4><pre>{html.escape(ip_list_text)}</pre></div>"
         f"<div class='card server-action-panel' data-server-panel='time'><h4>Time sync details</h4><pre>Current time: {html.escape(now_text)}\nLast peer sync: {html.escape(peer_last_sync_text)}\nNTP synced: {html.escape(ntp_info.get('synced', 'unknown'))}\nNTP service: {html.escape(ntp_info.get('service', 'unknown'))}\nNTP source: {html.escape(ntp_info.get('source', 'unknown'))}\n\n{html.escape(ntp_info.get('detail', ''))}</pre></div>"
-        f"<div class='card server-action-panel' data-server-panel='package'><h4>Package update</h4>{package_update_btns}<div class='button-row'><a class='btn-inline' href='{html.escape(REPO_URL)}' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a></div><pre>{html.escape(update_curl_cmd)}</pre><div class='muted'>Update: backs up, downloads latest, validates, replaces. On failure restores previous. Config and data preserved.</div><div class='muted'>{html.escape(source_scope_text)}</div></div>"
+        f"<div class='card server-action-panel" + (" open" if open_server_panel == "package" else "") + "' data-server-panel='package'><h4>Package update</h4>{package_update_btns}<div class='button-row'><a class='btn-inline' href='{html.escape(REPO_URL)}' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a></div><pre>{html.escape(update_curl_cmd)}</pre><div class='muted'>Update: backs up, downloads latest, validates, replaces. On failure restores previous. Config and data preserved.</div><div class='muted'>{html.escape(source_scope_text)}</div></div>"
         f"<div class='card server-action-panel' data-server-panel='login'><h4>Recent login events (IP + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
         f"<div class='card server-action-panel' data-server-panel='login-time'><h4>Recent login events (time + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
         "</div>"
@@ -5348,6 +5350,8 @@ def _render_setup_html(
     .server-action-panels {{ margin-top:10px; }}
     .server-action-panel {{ display:none; border-color:rgba(76,143,246,.3); }}
     .server-action-panel.open {{ display:block; }}
+    .server-action-panel[data-server-panel='package'] {{ text-align:left; }}
+    .server-action-panel[data-server-panel='package'] .package-update-row {{ display:block; width:100%; text-align:left; margin-bottom:8px; }}
     .btn-inline {{ display:inline-block; padding:9px 14px; border:1px solid #36517a; border-radius:8px; text-decoration:none; color:#c8dbf8; font-weight:600; }}
     .btn-inline:hover {{ background: rgba(54,81,122,.25); }}
     .server-info-item strong {{ font-size:13px; color:#d9e8ff; }}
@@ -5495,6 +5499,12 @@ def _render_setup_html(
         </div>
       </div>
     </div>
+    <div class="modal-backdrop" id="update-modal">
+      <div class="modal">
+        <h3>Package update</h3>
+        <div id="update-modal-content"></div>
+      </div>
+    </div>
     <div class="card footer-note">
       {html.escape(BRAND_COPYRIGHT)} | Author: {html.escape(BRAND_AUTHOR)} |
       <a href="{html.escape(BRAND_URL)}" target="_blank" rel="noopener noreferrer">EasySystems GmbH</a>
@@ -5585,13 +5595,22 @@ def _render_setup_html(
           if ((form.getAttribute("method") || "get").toLowerCase() !== "post") return;
           if (form.id === "monitor-form") return;
           var act = (form.getAttribute("action") || "") + "";
-          var skip = /\\/(auth\\/(logout|login|setup|verify-2fa|recovery|import|export))|\\/danger-(restart|reset)|\\/self-(update|rollback)/.test(act) || (form.enctype || "").toLowerCase().indexOf("multipart") >= 0;
+          var skip = /\\/(auth\\/(logout|login|setup|verify-2fa|recovery|import|export))|\\/danger-(restart|reset)|\\/self-rollback/.test(act) || (form.enctype || "").toLowerCase().indexOf("multipart") >= 0;
           if (skip) return;
           ev.preventDefault();
           ev.stopImmediatePropagation();
           ensureUiViewField(form);
           var submitBtn = form.querySelector("button[type='submit']");
           if (submitBtn) {{ submitBtn.disabled = true; submitBtn.textContent = (submitBtn.textContent || "").replace(/…$/, "") + "…"; }}
+          var isSelfUpdate = (act || "").indexOf("/self-update") >= 0;
+          if (isSelfUpdate) {{
+            var m = document.getElementById("update-modal");
+            var mContent = document.getElementById("update-modal-content");
+            if (m && mContent) {{
+              m.classList.add("open");
+              mContent.innerHTML = "<p>Updating…</p><p class='muted'>Downloading latest version, validating, replacing.</p>";
+            }}
+          }}
           try {{
             var fd = new FormData(form);
             var params = new URLSearchParams();
@@ -5603,11 +5622,38 @@ def _render_setup_html(
             }});
             var txt = await r.text();
             if (r.redirected && (r.url || "").indexOf("auth") >= 0) {{ location.href = r.url; return; }}
-            _updatePageFromResponse(txt);
+            if (isSelfUpdate) {{
+              var doc = new DOMParser().parseFromString(txt, "text/html");
+              var errEl = doc.querySelector(".err");
+              var okEl = doc.querySelector(".ok");
+              var preEl = doc.querySelector("pre");
+              var m = document.getElementById("update-modal");
+              var mContent = document.getElementById("update-modal-content");
+              if (m && mContent) {{
+                var status = errEl ? (errEl.textContent || "").trim() : (okEl ? (okEl.textContent || "").trim() : "Update complete.");
+                var output = preEl ? (preEl.textContent || "").trim() : "";
+                mContent.innerHTML = "<p class='" + (errEl ? "err" : "ok") + "'>" + escapeHtml(status) + "</p>" + (output ? "<pre>" + escapeHtml(output) + "</pre>" : "") + "<p class='muted'>Reloading page in 5 seconds…</p>";
+                setTimeout(function() {{ location.reload(); }}, 5000);
+              }} else {{
+                _updatePageFromResponse(txt);
+              }}
+            }} else {{
+              _updatePageFromResponse(txt);
+            }}
             var addAgentModal = document.getElementById("add-agent-modal");
             if (addAgentModal) addAgentModal.classList.remove("open");
           }} catch (e) {{
-            location.reload();
+            if (isSelfUpdate) {{
+              var m = document.getElementById("update-modal");
+              var mContent = document.getElementById("update-modal-content");
+              if (m && mContent) {{
+                mContent.innerHTML = "<p class='err'>Update failed: " + escapeHtml(String(e)) + "</p><p><a href='/'>Return to overview</a></p>";
+              }} else {{
+                location.reload();
+              }}
+            }} else {{
+              location.reload();
+            }}
           }} finally {{
             if (submitBtn) {{ submitBtn.disabled = false; submitBtn.textContent = (submitBtn.textContent || "").replace("…", ""); }}
           }}
@@ -8079,6 +8125,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                         security_message="Autoupdate " + ("enabled" if enabled else "disabled") + ".",
                         ui_view=ui_view,
                         ssl_warning=ssl_warning,
+                        open_server_panel="package",
                     ))
                     return
                 if self.path == "/danger-restart":
