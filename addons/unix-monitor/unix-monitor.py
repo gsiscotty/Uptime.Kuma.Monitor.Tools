@@ -5079,14 +5079,14 @@ def _render_setup_html(
     package_update_btns = ""
     if not source_is_remote:
         autoupdate_form = (
-            "<form method='post' action='/settings/save-autoupdate' style='display:inline;margin-bottom:8px;'>"
+            "<form method='post' action='/settings/save-autoupdate' style='display:block;margin-bottom:8px;text-align:left;'>"
             "<input type='hidden' name='autoupdate_enabled' value='0'>"
-            f"<label style='display:flex;align-items:center;gap:6px;cursor:pointer;'>"
+            f"<label style='display:flex;align-items:center;gap:6px;cursor:pointer;justify-content:flex-start;'>"
             f"<input type='checkbox' name='autoupdate_enabled' value='1'"
             + (" checked" if autoupdate_enabled else "")
             + " onchange='this.form.submit()'> Enable autoupdate (check on each visit, apply if newer)</label></form>"
         )
-        package_update_btns = "<div style='margin-bottom:8px;'>" + autoupdate_form + "</div>"
+        package_update_btns = "<div style='margin-bottom:8px;text-align:left;'>" + autoupdate_form + "</div>"
         if has_update_helper:
             package_update_btns += "<div class='button-row' style='margin-bottom:8px;'><form method='post' action='/self-update' style='display:inline;' onsubmit='return confirm(\"Update to latest version? Config and data will be preserved. If update fails, previous version is restored.\");'><button type='submit' class='btn-inline'>Update now</button></form>"
         if has_backup and has_update_helper:
