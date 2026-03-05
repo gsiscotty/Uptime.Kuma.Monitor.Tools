@@ -5080,13 +5080,13 @@ def _render_setup_html(
     package_update_btns = ""
     if not source_is_remote:
         autoupdate_form = (
-            "<div class='package-update-row'>"
-            "<form method='post' action='/settings/save-autoupdate' style='display:block;'>"
+            "<div class='autoupdate-row'>"
+            "<form method='post' action='/settings/save-autoupdate' class='autoupdate-form'>"
             "<input type='hidden' name='autoupdate_enabled' value='0'>"
             "<label class='autoupdate-label'>"
             f"<input type='checkbox' name='autoupdate_enabled' value='1'"
             + (" checked" if autoupdate_enabled else "")
-            + " onchange='this.form.submit()'> <span>Enable autoupdate (check on each visit, apply if newer)</span></label></form></div>"
+            + " onchange='this.form.submit()'> Enable autoupdate (check on each visit, apply if newer)</label></form></div>"
         )
         package_update_btns = autoupdate_form
         if has_update_helper:
@@ -5361,10 +5361,10 @@ def _render_setup_html(
     .server-action-panel {{ display:none; border-color:rgba(76,143,246,.3); }}
     .server-action-panel.open {{ display:block; }}
     .server-action-panel[data-server-panel='package'] {{ text-align:left; }}
-    .server-action-panel[data-server-panel='package'] .package-update-row {{ display:block; width:100%; text-align:left; margin-bottom:8px; }}
-    .server-action-panel[data-server-panel='package'] .package-update-row form {{ display:inline-block; width:auto; margin:0; }}
-    .autoupdate-label {{ display:flex; align-items:flex-start; justify-content:flex-start; gap:8px; cursor:pointer; line-height:1.4; width:fit-content; }}
-    .autoupdate-label input[type="checkbox"] {{ flex-shrink:0; margin-top:2px; accent-color:#2f80ed; }}
+    .autoupdate-row {{ margin-bottom:12px; }}
+    .autoupdate-form {{ margin:0; }}
+    .autoupdate-label {{ display:block; cursor:pointer; line-height:1.5; font-size:13px; }}
+    .autoupdate-label input[type="checkbox"] {{ vertical-align:middle; margin:0 8px 0 0; accent-color:#2f80ed; }}
     .server-action-panel[data-server-panel='package'] .button-row {{ justify-content:flex-start; }}
     .btn-inline {{ display:inline-block; padding:9px 14px; border:1px solid #36517a; border-radius:8px; text-decoration:none; color:#c8dbf8; font-weight:600; }}
     .btn-inline:hover {{ background: rgba(54,81,122,.25); }}
