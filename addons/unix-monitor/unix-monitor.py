@@ -5275,8 +5275,11 @@ def _render_setup_html(
     has_backup = (get_script_path().parent / "unix-monitor.py.prev").exists()
     autoupdate_enabled = bool(cfg.get("autoupdate_enabled", False))
     update_check_result = _load_update_check_result() if not source_is_remote else {}
-    update_available = bool(update_check_result.get("update_available"))
     latest_version = str(update_check_result.get("latest_version", "") or "")
+    # Only show update available if cache says so AND current VERSION is actually older (stale cache fix after manual update)
+    update_available = bool(update_check_result.get("update_available")) and (
+        latest_version and _version_tuple(VERSION) < _version_tuple(latest_version)
+    )
     package_update_btns = ""
     if not source_is_remote:
         update_ready_banner = ""
@@ -5318,7 +5321,10 @@ def _render_setup_html(
         "<div class='card server-action-panel" + package_panel_open + "' data-server-panel='package'>"
         "<h4>Package update</h4>"
         + package_update_btns
-        + "<div class='button-row'><a class='btn-inline' href='" + html.escape(REPO_URL) + "' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a></div>"
+        + "<div class='button-row'>"
+        + "<a class='btn-inline' href='" + html.escape(REPO_URL) + "' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a>"
+        + (" <form method='post' action='/settings/recheck-updates' style='display:inline;'><button type='submit' class='btn-inline btn-inline-muted'>Recheck for updates</button></form>" if not source_is_remote else "")
+        + "</div>"
         + "<pre>" + html.escape(update_curl_cmd) + "</pre>"
         + "<div class='muted'>Update: backs up, downloads latest, validates, replaces. On failure restores previous. Config and data preserved.</div>"
         + "<div class='muted'>" + html.escape(source_scope_text) + "</div></div>"
@@ -8472,6 +8478,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 "/settings/save-instance-name",
                 "/settings/save-autoupdate",
                 "/settings/request-autoupdate-on-logout",
+                "/settings/recheck-updates",
                 "/save",
                 "/run-check",
                 "/run-check-monitor",
@@ -8563,6 +8570,14 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     append_ui_log(f"agent-update | triggered for {peer_id}, session {session_id}")
                     self._reply_json({"status": "started", "session_id": session_id, "peer_id": peer_id}, 202)
                     return
+                if self.path == "/settings/recheck-updates":
+                    try:
+                        _get_update_check_path().unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    append_ui_log("settings | update cache cleared, recheck on next load")
+                    self._redirect("/?view=overview")
+                    return
                 if self.path == "/settings/request-autoupdate-on-logout":
                     flag_path = _get_autoupdate_on_logout_flag_path()
                     try:
@@ -8630,6 +8645,10 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                             ))
                             return
                         append_ui_log("self-update | completed successfully")
+                        try:
+                            _get_update_check_path().unlink(missing_ok=True)
+                        except OSError:
+                            pass
                         self._reply_html(_render_setup_html(
                             security_message="Update complete. Config and data preserved. Restarting services…",
                             action_output=out,
