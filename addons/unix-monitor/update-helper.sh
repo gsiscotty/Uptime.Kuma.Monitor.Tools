@@ -30,10 +30,19 @@ if [ "${MODE}" = "rollback" ]; then
 fi
 
 REPO="gsiscotty/Uptime.Kuma.Monitor.Tools"
-BRANCH="main"
 SCRIPT_NAME="unix-monitor.py"
-URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/addons/unix-monitor/${SCRIPT_NAME}"
 
+# Resolve download ref: use latest release tag so updates match what the UI checks against.
+# Set UNIX_MONITOR_USE_MAIN=1 to force main branch (e.g. for testing unreleased changes).
+REF="main"
+if [ "${UNIX_MONITOR_USE_MAIN:-0}" != "1" ] && command -v curl >/dev/null 2>&1; then
+    TAG=$(curl -sfL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep -o '"tag_name":[[:space:]]*"[^"]*"' | sed 's/"tag_name":[[:space:]]*"\([^"]*\)"/\1/')
+    if [ -n "${TAG}" ]; then
+        REF="${TAG}"
+    fi
+fi
+
+URL="https://raw.githubusercontent.com/${REPO}/${REF}/addons/unix-monitor/${SCRIPT_NAME}"
 NEW="${SCRIPT}.new"
 
 # 1) Backup current

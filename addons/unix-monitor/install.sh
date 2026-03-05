@@ -4,15 +4,23 @@ set -euo pipefail
 
 REPO="gsiscotty/Uptime.Kuma.Monitor.Tools"
 BRANCH="main"
+# Use latest release tag when available so install/update matches what the UI checks.
+# Set UNIX_MONITOR_USE_MAIN=1 to force main branch (e.g. for testing unreleased changes).
+REF="${BRANCH}"
+if [ "${UNIX_MONITOR_USE_MAIN:-0}" != "1" ] && command -v curl >/dev/null 2>&1; then
+    TAG=$(curl -sfL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep -o '"tag_name":[[:space:]]*"[^"]*"' | sed 's/"tag_name":[[:space:]]*"\([^"]*\)"/\1/')
+    [ -n "${TAG}" ] && REF="${TAG}"
+fi
+
 SCRIPT_NAME="unix-monitor.py"
 SCRIPT_REMOTE_PATH="addons/unix-monitor/${SCRIPT_NAME}"
-SCRIPT_RAW_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${SCRIPT_REMOTE_PATH}"
+SCRIPT_RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${SCRIPT_REMOTE_PATH}"
 UNINSTALL_NAME="uninstall.sh"
 UNINSTALL_REMOTE_PATH="addons/unix-monitor/${UNINSTALL_NAME}"
-UNINSTALL_RAW_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${UNINSTALL_REMOTE_PATH}"
+UNINSTALL_RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${UNINSTALL_REMOTE_PATH}"
 UPDATE_HELPER_NAME="update-helper.sh"
 UPDATE_HELPER_REMOTE_PATH="addons/unix-monitor/${UPDATE_HELPER_NAME}"
-UPDATE_HELPER_RAW_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${UPDATE_HELPER_REMOTE_PATH}"
+UPDATE_HELPER_RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${UPDATE_HELPER_REMOTE_PATH}"
 DEFAULT_INSTALL_DIR="/opt/unix-monitor"
 MIN_PYTHON_MAJOR=3
 MIN_PYTHON_MINOR=8
