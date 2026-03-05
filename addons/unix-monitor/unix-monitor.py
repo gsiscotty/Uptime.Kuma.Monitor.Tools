@@ -1415,6 +1415,78 @@ def _fetch_agent_diag(
         return f"Failed to fetch from agent: {type(e).__name__}: {e}"
 
 
+def _trigger_agent_update(cfg: Dict[str, Any], peer_id: str) -> Tuple[Optional[str], Optional[str]]:
+    """Master triggers update on agent. Returns (session_id, error). session_id None on error."""
+    token = str(cfg.get("peering_token", "") or "").strip()
+    if not token:
+        return None, "No peering token configured."
+    peers = cfg.get("peers", [])
+    target = None
+    for p in (peers if isinstance(peers, list) else []):
+        if str(p.get("instance_id", "")) == peer_id:
+            target = p
+            break
+    if not target:
+        return None, f"Agent '{peer_id}' not found in peers."
+    p_url_raw = str(target.get("url", "") or "").strip().rstrip("/")
+    if not p_url_raw:
+        return None, f"No URL configured for agent."
+    p_url = _resolve_peer_url_from_stored(p_url_raw, token, timeout=10)
+    if not p_url:
+        return None, f"Cannot reach agent at {p_url_raw}."
+    try:
+        status, body = _peer_http_request(p_url, token, "POST", "/api/peer/update", payload={}, timeout=15)
+        if status in (200, 202):
+            try:
+                data = json.loads(body)
+                return str(data.get("session_id", "") or ""), None
+            except (json.JSONDecodeError, ValueError):
+                return None, f"Invalid response: {body[:200]}"
+        try:
+            err = json.loads(body)
+            return None, str(err.get("error", body))[:500]
+        except (json.JSONDecodeError, ValueError):
+            return None, f"HTTP {status}: {body[:500]}"
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def _fetch_agent_update_status(cfg: Dict[str, Any], peer_id: str, session_id: str) -> Dict[str, Any]:
+    """Master fetches update status from agent."""
+    token = str(cfg.get("peering_token", "") or "").strip()
+    if not token:
+        return {"error": "No peering token configured."}
+    peers = cfg.get("peers", [])
+    target = None
+    for p in (peers if isinstance(peers, list) else []):
+        if str(p.get("instance_id", "")) == peer_id:
+            target = p
+            break
+    if not target:
+        return {"error": f"Agent '{peer_id}' not found."}
+    p_url_raw = str(target.get("url", "") or "").strip().rstrip("/")
+    if not p_url_raw:
+        return {"error": "No URL configured for agent."}
+    p_url = _resolve_peer_url_from_stored(p_url_raw, token, timeout=5)
+    if not p_url:
+        return {"error": f"Cannot reach agent at {p_url_raw}."}
+    try:
+        qs = f"?session_id={quote(session_id)}"
+        status, body = _peer_http_request(p_url, token, "GET", f"/api/peer/update-status{qs}", timeout=10)
+        if status < 300:
+            try:
+                return json.loads(body) if body else {}
+            except (json.JSONDecodeError, ValueError):
+                return {"error": "Invalid response", "raw": body[:200]}
+        try:
+            err = json.loads(body)
+            return {"error": str(err.get("error", body))[:500], "stage": err.get("stage", "unknown")}
+        except (json.JSONDecodeError, ValueError):
+            return {"error": f"HTTP {status}", "stage": "unknown"}
+    except Exception as e:
+        return {"error": str(e), "stage": "unknown"}
+
+
 def _diagnose_agent_diag_connection(cfg: Dict[str, Any], peer_id: str) -> str:
     """Run step-by-step diagnostic for master->agent log fetch. Returns a detailed report."""
     lines: List[str] = []
@@ -1715,6 +1787,100 @@ def _load_update_check_result() -> Dict[str, Any]:
 
 def _get_autoupdate_on_logout_flag_path() -> Path:
     return get_runtime_data_dir() / "unix-autoupdate-on-logout.flag"
+
+
+def _get_agent_update_session_path() -> Path:
+    return get_runtime_data_dir() / "unix-agent-update-session.json"
+
+
+def _load_agent_update_session() -> Dict[str, Any]:
+    path = _get_agent_update_session_path()
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_agent_update_session(data: Dict[str, Any]) -> None:
+    path = _get_agent_update_session_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.parent / ".unix-agent-update-session.json.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(str(tmp), str(path))
+    except OSError:
+        pass
+
+
+def _run_agent_update_background() -> str:
+    """Run update-helper in background, streaming output to session file. Returns session_id."""
+    session_id = secrets.token_hex(8)
+    helper = get_update_helper_path()
+    script_dir = str(get_script_path().parent)
+    if not helper.exists():
+        _save_agent_update_session({
+            "session_id": session_id,
+            "stage": "failed",
+            "log": [],
+            "error": "Update helper not found",
+            "started_at": int(time.time()),
+            "updated_at": int(time.time()),
+        })
+        return session_id
+    _save_agent_update_session({
+        "session_id": session_id,
+        "stage": "running",
+        "log": [],
+        "error": None,
+        "started_at": int(time.time()),
+        "updated_at": int(time.time()),
+    })
+
+    def _do_update() -> None:
+        log_lines: List[str] = []
+        try:
+            proc = subprocess.Popen(
+                [str(helper), script_dir, "update", "no-restart"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            assert proc.stdout
+            for line in iter(proc.stdout.readline, ""):
+                line = line.rstrip("\n")
+                if line:
+                    log_lines.append(line)
+                    sess = _load_agent_update_session()
+                    sess["log"] = list(log_lines)
+                    sess["updated_at"] = int(time.time())
+                    _save_agent_update_session(sess)
+            proc.wait()
+            sess = _load_agent_update_session()
+            sess["log"] = list(log_lines)
+            sess["stage"] = "done" if proc.returncode == 0 else "failed"
+            sess["error"] = None if proc.returncode == 0 else f"Exit code {proc.returncode}"
+            sess["updated_at"] = int(time.time())
+            _save_agent_update_session(sess)
+            if proc.returncode == 0:
+                time.sleep(2)
+                for u in ("unix-monitor-ui.service", "unix-monitor-scheduler.timer", "unix-monitor-smart-helper.timer", "unix-monitor-backup-helper.timer", "unix-monitor-system-log-helper.timer"):
+                    _run_cmd(["systemctl", "restart", u], timeout_sec=10)
+        except Exception as e:
+            log_lines.append(f"Error: {e}")
+            sess = _load_agent_update_session()
+            sess["log"] = list(log_lines)
+            sess["stage"] = "failed"
+            sess["error"] = str(e)
+            sess["updated_at"] = int(time.time())
+            _save_agent_update_session(sess)
+
+    threading.Thread(target=_do_update, daemon=True).start()
+    return session_id
 
 
 def _maybe_run_autoupdate(defer_if_user_logged_in: bool = True) -> None:
@@ -4376,6 +4542,7 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
                 f"<input type='hidden' name='peer_id' value='{html.escape(pid)}'>"
                 f"<button type='submit' style='{pbtn}'>Sync</button>"
                 f"</form>"
+                f"<button type='button' class='agent-update-btn' data-peer-id='{html.escape(pid)}' data-peer-name='{html.escape(pname)}' style='{pbtn}'>Update</button>"
                 f"{open_btn}"
                 f"<form method='post' action='/peer/remove' style='margin:0;'>"
                 f"<input type='hidden' name='peer_id' value='{html.escape(pid)}'>"
@@ -5558,6 +5725,12 @@ def _render_setup_html(
         <div id="update-modal-content"></div>
       </div>
     </div>
+    <div class="modal-backdrop" id="agent-update-modal">
+      <div class="modal">
+        <h3>Agent update</h3>
+        <div id="agent-update-modal-content"></div>
+      </div>
+    </div>
     <div class="card footer-note">
       {html.escape(BRAND_COPYRIGHT)} | Author: {html.escape(BRAND_AUTHOR)} |
       <a href="{html.escape(BRAND_URL)}" target="_blank" rel="noopener noreferrer">EasySystems GmbH</a>
@@ -5719,6 +5892,72 @@ def _render_setup_html(
           try {{
             sessionStorage.setItem("synmon_scroll_y", String(Math.max(0, Math.round(window.scrollY || 0))));
           }} catch (e) {{}}
+        }}, true);
+        document.addEventListener("click", async function(ev) {{
+          var btn = ev && ev.target ? ev.target.closest(".agent-update-btn") : null;
+          if (!btn) return;
+          ev.preventDefault();
+          var peerId = btn.getAttribute("data-peer-id") || "";
+          var peerName = btn.getAttribute("data-peer-name") || peerId;
+          if (!peerId) return;
+          var modal = document.getElementById("agent-update-modal");
+          var mContent = document.getElementById("agent-update-modal-content");
+          if (!modal || !mContent) return;
+          modal.classList.add("open");
+          mContent.innerHTML = "<p>Starting update on " + escapeHtml(peerName) + "…</p>";
+          btn.disabled = true;
+          try {{
+            var r = await fetch("/agent-update", {{
+              method: "POST",
+              headers: {{ "Content-Type": "application/x-www-form-urlencoded" }},
+              body: "peer_id=" + encodeURIComponent(peerId)
+            }});
+            var data = null;
+            try {{ data = await r.json(); }} catch (e) {{}}
+            if (!r.ok || !data || data.error) {{
+              mContent.innerHTML = "<p class='err'>" + escapeHtml(data && data.error ? data.error : "Failed to start update") + "</p>";
+              btn.disabled = false;
+              return;
+            }}
+            var sessionId = data.session_id;
+            if (!sessionId) {{
+              mContent.innerHTML = "<p class='err'>No session ID returned</p>";
+              btn.disabled = false;
+              return;
+            }}
+            var pollInterval = setInterval(async function() {{
+              try {{
+                var sr = await fetch("/api/agent-update-status?peer_id=" + encodeURIComponent(peerId) + "&session_id=" + encodeURIComponent(sessionId), {{ credentials: "same-origin" }});
+                var sdata = sr.ok ? await sr.json() : {{}};
+                if (sdata.error && !sdata.log) {{
+                  mContent.innerHTML = "<p class='err'>" + escapeHtml(sdata.error) + "</p>";
+                  clearInterval(pollInterval);
+                  btn.disabled = false;
+                  return;
+                }}
+                var log = sdata.log || [];
+                var stage = sdata.stage || "running";
+                var err = sdata.error || "";
+                var html = "<p><strong>" + escapeHtml(peerName) + "</strong> – " + escapeHtml(stage) + "</p>";
+                if (log.length) html += "<pre style='max-height:200px;overflow:auto;font-size:11px;'>" + escapeHtml(log.join("\\n")) + "</pre>";
+                if (err) html += "<p class='err'>" + escapeHtml(err) + "</p>";
+                mContent.innerHTML = html;
+                if (stage === "done" || stage === "failed") {{
+                  clearInterval(pollInterval);
+                  html += (stage === "done" ? "<p class='ok'>Update complete. Agent may restart.</p>" : "<p class='err'>Update failed.</p>");
+                  html += "<p><button type='button' class='close-link' onclick=\\"document.getElementById('agent-update-modal').classList.remove('open')\\">Close</button></p>";
+                  mContent.innerHTML = html;
+                  btn.disabled = false;
+                  if (stage === "done") setTimeout(function() {{ refreshLive && refreshLive(); }}, 3000);
+                }}
+              }} catch (e) {{
+                mContent.innerHTML += "<p class='err'>Poll error: " + escapeHtml(String(e)) + "</p>";
+              }}
+            }}, 600);
+          }} catch (e) {{
+            mContent.innerHTML = "<p class='err'>" + escapeHtml(String(e)) + "</p>";
+            btn.disabled = false;
+          }}
         }}, true);
         var modeEl = document.getElementById("check_mode");
         var nameEl = document.getElementById("name");
@@ -6207,6 +6446,7 @@ def _render_setup_html(
                 + "<input type='hidden' name='peer_id' value='" + pid + "'>"
                 + "<button type='submit' style='" + pbs + "'>Sync</button>"
                 + "</form>"
+                + "<button type='button' class='agent-update-btn' data-peer-id='" + escapeHtml(p.instance_id || "") + "' data-peer-name='" + escapeHtml(p.instance_name || p.instance_id || "?") + "' style='" + pbs + "'>Update</button>"
                 + openBtn
                 + removeBtn
                 + "</div></div>";
@@ -7036,6 +7276,28 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 text = _build_diag_text(cfg, history, diag_view=view, log_filter=lf)
                 self._reply_peer_json({"text": text}, 200)
                 return
+            if parsed.path == "/api/peer/update-status":
+                if not self._require_peer_mtls(allow_token_only=True):
+                    return
+                if not self._verify_peer_token():
+                    self._reply_json({"error": "unauthorized"}, 401)
+                    return
+                self._check_get_signature()
+                qs = parse_qs(parsed.query)
+                session_id = str(qs.get("session_id", [""])[0] or "").strip()
+                sess = _load_agent_update_session()
+                if not session_id or sess.get("session_id") != session_id:
+                    self._reply_peer_json({"error": "session not found", "stage": "unknown"}, 404)
+                    return
+                self._reply_peer_json({
+                    "session_id": sess.get("session_id"),
+                    "stage": sess.get("stage", "unknown"),
+                    "log": sess.get("log", []),
+                    "error": sess.get("error"),
+                    "started_at": sess.get("started_at"),
+                    "updated_at": sess.get("updated_at"),
+                }, 200)
+                return
             auth = _load_auth_state()
             ssl_warning = self._ssl_warning_text()
             if parsed.path == "/auth/logout":
@@ -7144,6 +7406,23 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 qs = parse_qs(parsed.query)
                 source_ctx = (qs.get("source", ["local"])[0] or "local").strip()
                 self._reply_json(_build_live_snapshot_for_source(source_ctx), 200)
+                return
+            if parsed.path == "/api/agent-update-status":
+                if not self._is_authenticated():
+                    self._reply_json({"error": "unauthorized"}, 401)
+                    return
+                qs = parse_qs(parsed.query)
+                peer_id = (qs.get("peer_id", [""])[0] or "").strip()
+                session_id = (qs.get("session_id", [""])[0] or "").strip()
+                if not peer_id or not session_id:
+                    self._reply_json({"error": "Missing peer_id or session_id"}, 400)
+                    return
+                cfg = load_config()
+                if str(cfg.get("peer_role", "")) != "master":
+                    self._reply_json({"error": "Master role required"}, 403)
+                    return
+                data = _fetch_agent_update_status(cfg, peer_id, session_id)
+                self._reply_json(data, 200)
                 return
             if parsed.path == "/api/agent-diag":
                 qs = parse_qs(parsed.query)
@@ -7384,6 +7663,20 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 append_ui_log(f"peer-create-monitor | remote created '{m_name}' mode={m_mode}")
                 _trigger_peer_sync_bg(cfg)
                 self._reply_peer_json({"status": "ok", "created": m_name}, 201)
+                return
+            if self.path == "/api/peer/update":
+                if not self._require_peer_mtls():
+                    return
+                if not self._verify_peer_token():
+                    self._reply_json({"error": "unauthorized"}, 401)
+                    return
+                helper = get_update_helper_path()
+                if not helper.exists():
+                    self._reply_peer_json({"error": "Update helper not found"}, 400)
+                    return
+                session_id = _run_agent_update_background()
+                append_ui_log("peer-update | update started by master")
+                self._reply_peer_json({"status": "started", "session_id": session_id}, 202)
                 return
             if self.path == "/peer/test-connection":
                 if not self._is_authenticated():
@@ -8156,6 +8449,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 "/danger-reset",
                 "/self-update",
                 "/self-rollback",
+                "/agent-update",
             ):
                 self._reply_html(_render_setup_html(error="Unsupported endpoint"), 404)
                 return
@@ -8191,6 +8485,25 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                         ssl_warning=ssl_warning,
                         open_server_panel="package",
                     ))
+                    return
+                if self.path == "/agent-update":
+                    if not self._is_authenticated():
+                        self._reply_json({"error": "unauthorized"}, 401)
+                        return
+                    peer_id = (form.get("peer_id", [""])[0] or "").strip()
+                    if not peer_id:
+                        self._reply_json({"error": "Missing peer_id"}, 400)
+                        return
+                    cfg = load_config()
+                    if str(cfg.get("peer_role", "")) != "master":
+                        self._reply_json({"error": "Master role required"}, 403)
+                        return
+                    session_id, err = _trigger_agent_update(cfg, peer_id)
+                    if err:
+                        self._reply_json({"error": err}, 400)
+                        return
+                    append_ui_log(f"agent-update | triggered for {peer_id}, session {session_id}")
+                    self._reply_json({"status": "started", "session_id": session_id, "peer_id": peer_id}, 202)
                     return
                 if self.path == "/settings/request-autoupdate-on-logout":
                     flag_path = _get_autoupdate_on_logout_flag_path()
