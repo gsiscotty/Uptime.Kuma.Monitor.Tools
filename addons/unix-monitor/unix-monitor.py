@@ -5097,6 +5097,16 @@ def _render_setup_html(
             package_update_btns += "</div>"
     ip_list_text = "\n".join(all_ips) if all_ips else "No IP addresses detected."
     login_history_text = "\n".join(login_lines)
+    package_panel_open = " open" if open_server_panel == "package" else ""
+    package_panel_html = (
+        "<div class='card server-action-panel" + package_panel_open + "' data-server-panel='package'>"
+        "<h4>Package update</h4>"
+        + package_update_btns
+        + "<div class='button-row'><a class='btn-inline' href='" + html.escape(REPO_URL) + "' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a></div>"
+        + "<pre>" + html.escape(update_curl_cmd) + "</pre>"
+        + "<div class='muted'>Update: backs up, downloads latest, validates, replaces. On failure restores previous. Config and data preserved.</div>"
+        + "<div class='muted'>" + html.escape(source_scope_text) + "</div></div>"
+    )
     server_info_card_html = (
         "<div class='server-info-grid'>"
         f"<button type='button' class='server-info-item server-info-action' data-server-action='name'><span class='muted'>Name</span><strong>{html.escape(local_source_name)}</strong></button>"
@@ -5110,10 +5120,10 @@ def _render_setup_html(
         f"<div class='card server-action-panel' data-server-panel='name'><h4>Change server name</h4><form method='post' action='/settings/save-instance-name'><label>Instance Name</label><input name='instance_name' value='{html.escape(str(cfg.get('instance_name', '') or ''))}' placeholder='e.g. HQ-NAS'><div class='button-row'><button type='submit'>Save name</button></div></form></div>"
         f"<div class='card server-action-panel' data-server-panel='ip'><h4>System IP addresses</h4><pre>{html.escape(ip_list_text)}</pre></div>"
         f"<div class='card server-action-panel' data-server-panel='time'><h4>Time sync details</h4><pre>Current time: {html.escape(now_text)}\nLast peer sync: {html.escape(peer_last_sync_text)}\nNTP synced: {html.escape(ntp_info.get('synced', 'unknown'))}\nNTP service: {html.escape(ntp_info.get('service', 'unknown'))}\nNTP source: {html.escape(ntp_info.get('source', 'unknown'))}\n\n{html.escape(ntp_info.get('detail', ''))}</pre></div>"
-        f"<div class='card server-action-panel{' open' if open_server_panel == 'package' else ''}' data-server-panel='package'><h4>Package update</h4>{package_update_btns}<div class='button-row'><a class='btn-inline' href='{html.escape(REPO_URL)}' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a></div><pre>{html.escape(update_curl_cmd)}</pre><div class='muted'>Update: backs up, downloads latest, validates, replaces. On failure restores previous. Config and data preserved.</div><div class='muted'>{html.escape(source_scope_text)}</div></div>"
-        f"<div class='card server-action-panel' data-server-panel='login'><h4>Recent login events (IP + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
-        f"<div class='card server-action-panel' data-server-panel='login-time'><h4>Recent login events (time + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
-        "</div>"
+        + package_panel_html
+        + f"<div class='card server-action-panel' data-server-panel='login'><h4>Recent login events (IP + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
+        + f"<div class='card server-action-panel' data-server-panel='login-time'><h4>Recent login events (time + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
+        + "</div>"
     )
     overview_view_html = f"""
       <div class="card">
