@@ -1417,6 +1417,78 @@ def _fetch_agent_diag(
         return f"Failed to fetch from agent: {type(e).__name__}: {e}"
 
 
+def _trigger_agent_update(cfg: Dict[str, Any], peer_id: str) -> Tuple[Optional[str], Optional[str]]:
+    """Master triggers update on agent. Returns (session_id, error). Synology agents return error (no script update)."""
+    token = str(cfg.get("peering_token", "") or "").strip()
+    if not token:
+        return None, "No peering token configured."
+    peers = cfg.get("peers", [])
+    target = None
+    for p in (peers if isinstance(peers, list) else []):
+        if str(p.get("instance_id", "")) == peer_id:
+            target = p
+            break
+    if not target:
+        return None, f"Agent '{peer_id}' not found in peers."
+    p_url_raw = str(target.get("url", "") or "").strip().rstrip("/")
+    if not p_url_raw:
+        return None, "No URL configured for agent."
+    p_url = _resolve_peer_url_from_stored(p_url_raw, token, timeout=10)
+    if not p_url:
+        return None, f"Cannot reach agent at {p_url_raw}."
+    try:
+        status, body = _peer_http_request(p_url, token, "POST", "/api/peer/update", payload={}, timeout=15)
+        if status in (200, 202):
+            try:
+                data = json.loads(body)
+                return str(data.get("session_id", "") or ""), None
+            except (json.JSONDecodeError, ValueError):
+                return None, f"Invalid response: {body[:200]}"
+        try:
+            err = json.loads(body)
+            return None, str(err.get("error", body))[:500]
+        except (json.JSONDecodeError, ValueError):
+            return None, f"HTTP {status}: {body[:500]}"
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def _fetch_agent_update_status(cfg: Dict[str, Any], peer_id: str, session_id: str) -> Dict[str, Any]:
+    """Master fetches update status from agent."""
+    token = str(cfg.get("peering_token", "") or "").strip()
+    if not token:
+        return {"error": "No peering token configured."}
+    peers = cfg.get("peers", [])
+    target = None
+    for p in (peers if isinstance(peers, list) else []):
+        if str(p.get("instance_id", "")) == peer_id:
+            target = p
+            break
+    if not target:
+        return {"error": f"Agent '{peer_id}' not found."}
+    p_url_raw = str(target.get("url", "") or "").strip().rstrip("/")
+    if not p_url_raw:
+        return {"error": "No URL configured for agent."}
+    p_url = _resolve_peer_url_from_stored(p_url_raw, token, timeout=5)
+    if not p_url:
+        return {"error": f"Cannot reach agent at {p_url_raw}."}
+    try:
+        qs = f"?session_id={quote(session_id)}"
+        status, body = _peer_http_request(p_url, token, "GET", f"/api/peer/update-status{qs}", timeout=10)
+        if status < 300:
+            try:
+                return json.loads(body) if body else {}
+            except (json.JSONDecodeError, ValueError):
+                return {"error": "Invalid response", "raw": body[:200]}
+        try:
+            err = json.loads(body)
+            return {"error": str(err.get("error", body))[:500], "stage": err.get("stage", "unknown")}
+        except (json.JSONDecodeError, ValueError):
+            return {"error": f"HTTP {status}", "stage": "unknown"}
+    except Exception as e:
+        return {"error": str(e), "stage": "unknown"}
+
+
 def _diagnose_agent_diag_connection(cfg: Dict[str, Any], peer_id: str) -> str:
     """Run step-by-step diagnostic for master->agent log fetch. Returns a detailed report."""
     lines: List[str] = []
@@ -3935,6 +4007,7 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
                 f"<input type='hidden' name='peer_id' value='{html.escape(pid)}'>"
                 f"<button type='submit' style='{pbtn}'>Sync</button>"
                 f"</form>"
+                f"<button type='button' class='agent-update-btn' data-peer-id='{html.escape(pid)}' data-peer-name='{html.escape(pname)}' style='{pbtn}'>Update</button>"
                 f"{open_btn}"
                 f"<form method='post' action='/peer/remove' style='margin:0;'>"
                 f"<input type='hidden' name='peer_id' value='{html.escape(pid)}'>"
@@ -4405,6 +4478,14 @@ def _render_setup_html(
     package_panel_lines.append("")
     package_panel_lines.append(update_hint)
     package_panel_html = "<pre>" + html.escape("\n".join(package_panel_lines)) + "</pre>"
+    update_ready_banner = ""
+    if update_available and update_download_url and latest_version:
+        update_ready_banner = (
+            "<div class='update-ready-banner'>"
+            "<span>New version available (v" + html.escape(latest_version) + "). </span>"
+            "<a class='btn-inline' href='" + html.escape(update_download_url) + "' target='_blank' rel='noopener noreferrer'>Download SPK</a>"
+            "</div>"
+        )
     package_download_btn = ""
     if update_available and update_download_url:
         package_download_btn = f"<div class='button-row'><a class='btn-inline' href='{html.escape(update_download_url)}' target='_blank' rel='noopener noreferrer'>Download SPK ({html.escape(latest_version)})</a></div>"
@@ -4421,7 +4502,7 @@ def _render_setup_html(
         f"<div class='card server-action-panel' data-server-panel='name'><h4>Change server name</h4><form method='post' action='/settings/save-instance-name'><label>Instance Name</label><input name='instance_name' value='{html.escape(str(cfg.get('instance_name', '') or ''))}' placeholder='e.g. GSIARR01-AGENT'><div class='button-row'><button type='submit'>Save name</button></div></form></div>"
         f"<div class='card server-action-panel' data-server-panel='ip'><h4>System IP addresses</h4><pre>{html.escape(ip_list_text)}</pre></div>"
         f"<div class='card server-action-panel' data-server-panel='time'><h4>Time</h4><pre>Current time: {html.escape(now_text)}\n(System time on this NAS)</pre></div>"
-        f"<div class='card server-action-panel' data-server-panel='package'><h4>Package update</h4><div class='button-row'><a class='btn-inline' href='{html.escape(repo_url)}' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a></div>{package_download_btn}{package_panel_html}</div>"
+        f"<div class='card server-action-panel' data-server-panel='package'><h4>Package update</h4>{update_ready_banner}<div class='button-row'><a class='btn-inline' href='{html.escape(repo_url)}' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a></div>{package_download_btn}{package_panel_html}</div>"
         f"<div class='card server-action-panel' data-server-panel='login'><h4>Recent login events (IP + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
         f"<div class='card server-action-panel' data-server-panel='login-time'><h4>Recent login events (time + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
         "</div>"
@@ -4880,7 +4961,11 @@ def _render_setup_html(
     .server-action-panels {{ margin-top:10px; }}
     .server-action-panel {{ display:none; border-color:rgba(76,143,246,.3); }}
     .server-action-panel.open {{ display:block; }}
+    .server-action-panel[data-server-panel='package'] {{ text-align:left; }}
+    .server-action-panel[data-server-panel='package'] .button-row {{ justify-content:flex-start; }}
     .btn-inline {{ display:inline-block; padding:9px 14px; border:1px solid #36517a; border-radius:8px; text-decoration:none; color:#c8dbf8; font-weight:600; }}
+    .btn-inline:hover {{ background: rgba(54,81,122,.25); }}
+    .update-ready-banner {{ margin-bottom:12px; padding:10px 12px; background:rgba(47,128,237,.12); border:1px solid rgba(76,143,246,.35); border-radius:8px; display:flex; flex-wrap:wrap; align-items:center; gap:8px; }}
     .server-info-item strong {{ font-size:13px; color:#d9e8ff; }}
     .update-badge {{ display:inline-block; margin-left:6px; padding:2px 6px; font-size:11px; font-weight:600; color:#4c8ff6; background:rgba(76,143,246,.15); border-radius:6px; }}
     .gauge-link {{ text-decoration: none; }}
@@ -5070,6 +5155,12 @@ def _render_setup_html(
         </div>
       </div>
     </div>
+    <div class="modal-backdrop" id="agent-update-modal">
+      <div class="modal">
+        <h3>Agent update</h3>
+        <div id="agent-update-modal-content"></div>
+      </div>
+    </div>
     <div class="card footer-note">
       {html.escape(BRAND_COPYRIGHT)} | Author: {html.escape(BRAND_AUTHOR)} |
       <a href="{html.escape(BRAND_URL)}" target="_blank" rel="noopener noreferrer">EasySystems GmbH</a>
@@ -5153,6 +5244,76 @@ def _render_setup_html(
             panel.scrollIntoView({{ behavior: "smooth", block: "nearest" }});
           }}
         }});
+        document.addEventListener("click", async function(ev) {{
+          var btn = ev && ev.target ? ev.target.closest(".agent-update-btn") : null;
+          if (!btn) return;
+          ev.preventDefault();
+          var peerId = btn.getAttribute("data-peer-id") || "";
+          var peerName = btn.getAttribute("data-peer-name") || peerId;
+          if (!peerId) return;
+          var modal = document.getElementById("agent-update-modal");
+          var mContent = document.getElementById("agent-update-modal-content");
+          if (!modal || !mContent) return;
+          modal.classList.add("open");
+          mContent.innerHTML = "<p>Starting update on " + escapeHtml(peerName) + "…</p>";
+          btn.disabled = true;
+          try {{
+            var r = await fetch("/agent-update", {{
+              method: "POST",
+              headers: {{ "Content-Type": "application/x-www-form-urlencoded" }},
+              body: "peer_id=" + encodeURIComponent(peerId)
+            }});
+            var data = null;
+            try {{ data = await r.json(); }} catch (e) {{}}
+            if (!r.ok || !data || data.error) {{
+              mContent.innerHTML = "<p class='err'>" + escapeHtml(data && data.error ? data.error : "Failed to start update") + "</p>";
+              mContent.innerHTML += "<p><button type='button' class='close-link' onclick=\\"document.getElementById('agent-update-modal').classList.remove('open')\\">Close</button></p>";
+              btn.disabled = false;
+              return;
+            }}
+            var sessionId = data.session_id;
+            if (!sessionId) {{
+              mContent.innerHTML = "<p class='err'>No session ID returned</p>";
+              mContent.innerHTML += "<p><button type='button' class='close-link' onclick=\\"document.getElementById('agent-update-modal').classList.remove('open')\\">Close</button></p>";
+              btn.disabled = false;
+              return;
+            }}
+            var pollInterval = setInterval(async function() {{
+              try {{
+                var sr = await fetch("/api/agent-update-status?peer_id=" + encodeURIComponent(peerId) + "&session_id=" + encodeURIComponent(sessionId), {{ credentials: "same-origin" }});
+                var sdata = sr.ok ? await sr.json() : {{}};
+                if (sdata.error && !sdata.log) {{
+                  mContent.innerHTML = "<p class='err'>" + escapeHtml(sdata.error) + "</p>";
+                  mContent.innerHTML += "<p><button type='button' class='close-link' onclick=\\"document.getElementById('agent-update-modal').classList.remove('open')\\">Close</button></p>";
+                  clearInterval(pollInterval);
+                  btn.disabled = false;
+                  return;
+                }}
+                var log = sdata.log || [];
+                var stage = sdata.stage || "running";
+                var err = sdata.error || "";
+                var html = "<p><strong>" + escapeHtml(peerName) + "</strong> – " + escapeHtml(stage) + "</p>";
+                if (log.length) html += "<pre style='max-height:200px;overflow:auto;font-size:11px;'>" + escapeHtml(log.join("\\n")) + "</pre>";
+                if (err) html += "<p class='err'>" + escapeHtml(err) + "</p>";
+                mContent.innerHTML = html;
+                if (stage === "done" || stage === "failed") {{
+                  clearInterval(pollInterval);
+                  html += (stage === "done" ? "<p class='ok'>Update complete. Agent may restart.</p>" : "<p class='err'>Update failed.</p>");
+                  html += "<p><button type='button' class='close-link' onclick=\\"document.getElementById('agent-update-modal').classList.remove('open')\\">Close</button></p>";
+                  mContent.innerHTML = html;
+                  btn.disabled = false;
+                  if (stage === "done" && typeof refreshLive === "function") setTimeout(function() {{ refreshLive(); }}, 3000);
+                }}
+              }} catch (e) {{
+                mContent.innerHTML += "<p class='err'>Poll error: " + escapeHtml(String(e)) + "</p>";
+              }}
+            }}, 600);
+          }} catch (e) {{
+            mContent.innerHTML = "<p class='err'>" + escapeHtml(String(e)) + "</p>";
+            mContent.innerHTML += "<p><button type='button' class='close-link' onclick=\\"document.getElementById('agent-update-modal').classList.remove('open')\\">Close</button></p>";
+            btn.disabled = false;
+          }}
+        }}, true);
         // Intercept POST forms: fetch and update page without reload (except auth, danger, exports)
         document.addEventListener("submit", async function(ev) {{
           var form = ev && ev.target ? ev.target : null;
@@ -5683,6 +5844,7 @@ def _render_setup_html(
                 + "<input type='hidden' name='peer_id' value='" + pid + "'>"
                 + "<button type='submit' style='" + pbs + "'>Sync</button>"
                 + "</form>"
+                + "<button type='button' class='agent-update-btn' data-peer-id='" + escapeHtml(p.instance_id || "") + "' data-peer-name='" + escapeHtml(p.instance_name || p.instance_id || "?") + "' style='" + pbs + "'>Update</button>"
                 + openBtn
                 + removeBtn
                 + "</div></div>";
@@ -6458,6 +6620,17 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 text = _build_diag_text(cfg, history, diag_view=view, log_filter=lf)
                 self._reply_peer_json({"text": text}, 200)
                 return
+            if parsed.path == "/api/peer/update-status":
+                if not self._require_peer_mtls(allow_token_only=True):
+                    return
+                if not self._verify_peer_token():
+                    self._reply_json({"error": "unauthorized"}, 401)
+                    return
+                self._reply_peer_json({
+                    "error": "Synology packages do not support remote script updates.",
+                    "stage": "unsupported"
+                }, 404)
+                return
             auth = _load_auth_state()
             ssl_warning = self._ssl_warning_text()
             if parsed.path == "/auth/logout":
@@ -6564,6 +6737,23 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 return
             if parsed.path == "/status-json":
                 self._reply_json(_build_live_snapshot(), 200)
+                return
+            if parsed.path == "/api/agent-update-status":
+                if not self._is_authenticated():
+                    self._reply_json({"error": "unauthorized"}, 401)
+                    return
+                qs = parse_qs(parsed.query)
+                peer_id = (qs.get("peer_id", [""])[0] or "").strip()
+                session_id = (qs.get("session_id", [""])[0] or "").strip()
+                if not peer_id or not session_id:
+                    self._reply_json({"error": "Missing peer_id or session_id"}, 400)
+                    return
+                cfg = load_config()
+                if str(cfg.get("peer_role", "")) != "master":
+                    self._reply_json({"error": "Master role required"}, 403)
+                    return
+                data = _fetch_agent_update_status(cfg, peer_id, session_id)
+                self._reply_json(data, 200)
                 return
             if parsed.path == "/api/agent-diag":
                 qs = parse_qs(parsed.query)
@@ -6801,6 +6991,16 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 append_ui_log(f"peer-create-monitor | remote created '{m_name}' mode={m_mode}")
                 _trigger_peer_sync_bg(cfg)
                 self._reply_peer_json({"status": "ok", "created": m_name}, 201)
+                return
+            if self.path == "/api/peer/update":
+                if not self._require_peer_mtls():
+                    return
+                if not self._verify_peer_token():
+                    self._reply_json({"error": "unauthorized"}, 401)
+                    return
+                self._reply_peer_json({
+                    "error": "Synology packages are updated via Package Center. Download the SPK from GitHub releases and install manually."
+                }, 400)
                 return
             if self.path == "/peer/test-connection":
                 if not self._is_authenticated():
@@ -7557,10 +7757,30 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 "/auto-create-task",
                 "/danger-restart",
                 "/danger-reset",
+                "/agent-update",
             ):
                 self._reply_html(_render_setup_html(error="Unsupported endpoint"), 404)
                 return
             try:
+                if self.path == "/agent-update":
+                    if not self._is_authenticated():
+                        self._reply_json({"error": "unauthorized"}, 401)
+                        return
+                    peer_id = (form.get("peer_id", [""])[0] or "").strip()
+                    if not peer_id:
+                        self._reply_json({"error": "Missing peer_id"}, 400)
+                        return
+                    cfg = load_config()
+                    if str(cfg.get("peer_role", "")) != "master":
+                        self._reply_json({"error": "Master role required"}, 403)
+                        return
+                    session_id, err = _trigger_agent_update(cfg, peer_id)
+                    if err:
+                        self._reply_json({"error": err}, 400)
+                        return
+                    append_ui_log(f"agent-update | triggered for {peer_id}, session {session_id}")
+                    self._reply_json({"status": "started", "session_id": session_id, "peer_id": peer_id}, 202)
+                    return
                 if self.path == "/settings/save-instance-name":
                     raw_len = int(self.headers.get("Content-Length", "0"))
                     body = self.rfile.read(raw_len).decode("utf-8", errors="ignore")
