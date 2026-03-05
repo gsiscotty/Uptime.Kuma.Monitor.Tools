@@ -73,7 +73,7 @@ except Exception:
             return False
 
 
-VERSION = "1.0.0-0054"
+VERSION = "1.0.0-0055"
 CONFIG_FILE_MODE = 0o600
 CRON_MARKER = "# synology-monitor.py - do not edit this line manually"
 INTERVAL_MIN = 1
@@ -1037,6 +1037,18 @@ def _peer_url_for_input_display(url: str, default_port: int = PEER_DEFAULT_PORT)
     if port == default_port:
         return host
     return f"{host}:{port}"
+
+
+def _peer_url_for_open(url: str, default_port: int = PEER_DEFAULT_PORT) -> str:
+    """Build full URL for opening agent UI in a new tab. Uses http when no scheme to avoid SSL errors."""
+    if not url or not str(url).strip():
+        return ""
+    if "://" in url:
+        return url.rstrip("/")
+    host, port = _parse_peer_host_port(url, default_port)
+    if not host:
+        return ""
+    return f"http://{host}:{port}"
 
 
 def _resolve_peer_url(host: str, port: int, token: str, timeout: int = 5) -> str:
@@ -2033,6 +2045,7 @@ def _build_live_snapshot() -> Dict[str, Any]:
                 "monitor_count": len(snap.get("monitors", [])),
                 "latency_ms": peer_latency,
                 "url": p_url,
+                "open_url": _peer_url_for_open(p_url),
                 "version": str(pc_info.get("version", "") or ""),
             })
             peer_history = snap.get("history", [])
@@ -3745,17 +3758,17 @@ def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
                             last_seen = now
                 except Exception:
                     pass
-            p_url_display = p_url if ("://" in p_url) else (f"https://{p_url}" if p_url else "")
+            p_open_url = _peer_url_for_open(p_url)
             pclass = "ok" if pstatus == "online" else "err"
             seen_short = time.strftime("%H:%M:%S", time.localtime(last_seen)) if last_seen else "never"
             lat_txt = f"{p_latency} ms" if p_latency else "-"
             p_version = str(p.get("version", "") or "")
             pbtn = "padding:6px 12px;font-size:12px;border-radius:8px;font-weight:600;white-space:nowrap;cursor:pointer;line-height:1.2;border:1px solid #36517a;background:transparent;color:#c8dbf8;"
             open_btn = (
-                f"<a href='{html.escape(p_url_display)}' target='_blank' rel='noopener' "
+                f"<a href='{html.escape(p_open_url)}' target='_blank' rel='noopener noreferrer' "
                 f"style='{pbtn}text-decoration:none;display:inline-block;text-align:center;'>"
                 f"Open</a>"
-            ) if p_url_display else ""
+            ) if p_open_url else ""
             version_badge = f"<span class='badge muted-badge' data-role='peer-version'>v{html.escape(p_version)}</span>" if p_version else ""
             synced_badge = f"<span class='badge muted-badge' data-role='peer-synced'>Synced: {html.escape(seen_short)}</span>"
             peer_rows += (
@@ -5392,11 +5405,12 @@ def _render_setup_html(
               var latTxt = p.latency_ms ? p.latency_ms + " ms" : "-";
               var seenTxt = tsText(p.last_seen || 0);
               var pUrl = p.url || "";
+              var openUrl = p.open_url || (pUrl && pUrl.indexOf("://") >= 0 ? pUrl : (pUrl ? "http://" + pUrl : ""));
               var pUrlDisplay = peerUrlForInput(pUrl);
               var pid = escapeHtml(p.instance_id || "");
               var pbs = "padding:6px 12px;font-size:12px;border-radius:8px;font-weight:600;white-space:nowrap;cursor:pointer;line-height:1.2;border:1px solid #36517a;background:transparent;color:#c8dbf8;";
-              var openBtn = pUrl
-                ? "<a href='" + escapeHtml(pUrl) + "' target='_blank' rel='noopener' style='" + pbs + "text-decoration:none;display:inline-block;text-align:center;'>Open</a>"
+              var openBtn = openUrl
+                ? "<a href='" + escapeHtml(openUrl) + "' target='_blank' rel='noopener noreferrer' style='" + pbs + "text-decoration:none;display:inline-block;text-align:center;'>Open</a>"
                 : "";
               var removeBtn = "<form method='post' action='/peer/remove' style='margin:0;'>"
                 + "<input type='hidden' name='peer_id' value='" + pid + "'>"

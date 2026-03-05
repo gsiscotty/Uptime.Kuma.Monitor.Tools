@@ -285,24 +285,32 @@ else
     exit 1
 fi
 
-echo -e "Install directory [${BOLD}${DEFAULT_INSTALL_DIR}${NC}]: \c"
-read_input CUSTOM_DIR || true
+if [ -z "${MIGRATE_FROM_LEGACY:-}" ]; then
+    echo -e "Install directory [${BOLD}${DEFAULT_INSTALL_DIR}${NC}]: \c"
+    read_input CUSTOM_DIR || true
+fi
 INSTALL_DIR="${CUSTOM_DIR:-${DEFAULT_INSTALL_DIR}}"
 
 if [ ! -d "${INSTALL_DIR}" ]; then
     warn "Directory ${INSTALL_DIR} does not exist."
-    echo -e "Create it? (y/N): \c"
-    read_input CREATE || true
-    if [[ "${CREATE:-n}" =~ ^[Yy]$ ]]; then
-        if [ -w "$(dirname "${INSTALL_DIR}")" ]; then
-            mkdir -p "${INSTALL_DIR}"
-        else
-            sudo mkdir -p "${INSTALL_DIR}"
-            sudo chown "$(id -u):$(id -g)" "${INSTALL_DIR}"
-        fi
+    if [ -n "${MIGRATE_FROM_LEGACY:-}" ]; then
+        sudo mkdir -p "${INSTALL_DIR}"
+        sudo chown "$(id -u):$(id -g)" "${INSTALL_DIR}"
+        info "Created ${INSTALL_DIR}"
     else
-        err "Aborted."
-        exit 1
+        echo -e "Create it? (y/N): \c"
+        read_input CREATE || true
+        if [[ "${CREATE:-n}" =~ ^[Yy]$ ]]; then
+            if [ -w "$(dirname "${INSTALL_DIR}")" ]; then
+                mkdir -p "${INSTALL_DIR}"
+            else
+                sudo mkdir -p "${INSTALL_DIR}"
+                sudo chown "$(id -u):$(id -g)" "${INSTALL_DIR}"
+            fi
+        else
+            err "Aborted."
+            exit 1
+        fi
     fi
 fi
 
@@ -395,8 +403,8 @@ fi
 chmod 700 "${TARGET}" "${UNINSTALL_TARGET}"
 info "Installed to ${INSTALL_DIR}"
 
-if [ "${EXISTING_INSTALL}" -eq 1 ]; then
-    info "Reinstall detected: auto-installing dependencies without prompts."
+if [ "${EXISTING_INSTALL}" -eq 1 ] || [ -n "${MIGRATE_FROM_LEGACY:-}" ]; then
+    info "Auto-installing dependencies without prompts."
     if install_smartmontools; then
         info "smartmontools installed."
     else
@@ -464,11 +472,19 @@ if [ "${REINSTALL_MODE}" = "preserve" ] && [ -f "${CONFIG_PATH}" ]; then
         UPDATE_INTERVAL_ONLY=1
     fi
 else
-    echo "  1) Webserver mode (UI + local management, master/agent capable)"
-    echo "  2) No webserver mode (agent-only menu; master connection required)"
-    echo -e "Choose mode [1]: \c"
-    read_input MODE_CHOICE || true
-    MODE_CHOICE="${MODE_CHOICE:-1}"
+    MIGRATE_FROM_LEGACY="${MIGRATE_FROM_LEGACY:-}"
+    if [ -n "${MIGRATE_FROM_LEGACY}" ]; then
+        info "Migration from ${MIGRATE_FROM_LEGACY}: using defaults (webserver + systemd)."
+        MODE_CHOICE="1"
+        SCHED_CHOICE="1"
+        SCHED_INTERVAL_INPUT=""
+    else
+        echo "  1) Webserver mode (UI + local management, master/agent capable)"
+        echo "  2) No webserver mode (agent-only menu; master connection required)"
+        echo -e "Choose mode [1]: \c"
+        read_input MODE_CHOICE || true
+        MODE_CHOICE="${MODE_CHOICE:-1}"
+    fi
 
     if [ "${MODE_CHOICE}" = "2" ]; then
         WEB_ENABLED="false"
@@ -487,22 +503,26 @@ else
         fi
     fi
 
-    echo ""
-    echo "Scheduler backend:"
-    echo "  1) systemd (recommended)"
-    echo "  2) cron fallback"
-    echo -e "Choose scheduler [1]: \c"
-    read_input SCHED_CHOICE || true
-    SCHED_CHOICE="${SCHED_CHOICE:-1}"
-    if [ "${SCHED_CHOICE}" = "2" ]; then
+    if [ -z "${MIGRATE_FROM_LEGACY:-}" ]; then
+        echo ""
+        echo "Scheduler backend:"
+        echo "  1) systemd (recommended)"
+        echo "  2) cron fallback"
+        echo -e "Choose scheduler [1]: \c"
+        read_input SCHED_CHOICE || true
+        SCHED_CHOICE="${SCHED_CHOICE:-1}"
+    fi
+    if [ "${SCHED_CHOICE:-1}" = "2" ]; then
         SCHED_BACKEND="cron"
         SCHED_INTERVAL_MIN="5"
     else
         SCHED_BACKEND="systemd"
         SCHED_INTERVAL_MIN="1"
     fi
-    echo -e "Scheduler interval in minutes [${SCHED_INTERVAL_MIN}]: \c"
-    read_input SCHED_INTERVAL_INPUT || true
+    if [ -z "${MIGRATE_FROM_LEGACY:-}" ]; then
+        echo -e "Scheduler interval in minutes [${SCHED_INTERVAL_MIN}]: \c"
+        read_input SCHED_INTERVAL_INPUT || true
+    fi
     if [ -n "${SCHED_INTERVAL_INPUT:-}" ]; then
         SCHED_INTERVAL_MIN="$(normalize_interval "${SCHED_INTERVAL_INPUT}")"
     fi
@@ -527,6 +547,26 @@ else
 EOF
     chmod 600 "${CONFIG_PATH}"
     info "Created config: ${CONFIG_PATH}"
+fi
+
+# Merge migrated monitors from deprecated addons (mount-monitor, unix-storage-monitor)
+if [ -n "${MIGRATE_MONITORS:-}" ] && [ -f "${MIGRATE_MONITORS}" ] && [ -f "${CONFIG_PATH}" ]; then
+    python3 - "${CONFIG_PATH}" "${MIGRATE_MONITORS}" <<'PY'
+import json, sys
+from pathlib import Path
+cfg_path, mig_path = Path(sys.argv[1]), Path(sys.argv[2])
+cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+mig = json.loads(mig_path.read_text(encoding="utf-8"))
+monitors = mig.get("monitors", [])
+cfg.setdefault("monitors", []).extend(monitors)
+if "cron_interval_minutes" in mig:
+    cfg["cron_interval_minutes"] = mig["cron_interval_minutes"]
+if "cron_enabled" in mig:
+    cfg["cron_enabled"] = mig["cron_enabled"]
+cfg_path.write_text(json.dumps(cfg, indent=2))
+print(f"Merged {len(monitors)} migrated monitor(s).")
+PY
+    info "Merged migrated monitors from legacy addon."
 fi
 
 if [ "${UPDATE_INTERVAL_ONLY}" -eq 1 ] && [ -f "${CONFIG_PATH}" ]; then

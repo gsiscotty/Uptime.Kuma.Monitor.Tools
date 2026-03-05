@@ -61,6 +61,49 @@ echo -e "${BOLD}Uptime Kuma Monitor Tools${NC}"
 echo "─────────────────────────────────────"
 echo ""
 
+# ── Deprecation: offer migration to unix-monitor ──
+MIGRATE_SCRIPT_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/scripts/migrate-legacy-to-unix-monitor.sh"
+UNIX_INSTALL_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/addons/unix-monitor/install.sh"
+read_input_safe() { read -r "$@" </dev/tty 2>/dev/null || true; }
+has_config() {
+    [ -f "/opt/unix-storage-monitor/unix-storage-monitor.json" ] || [ -f "${HOME}/.config/unix-storage-monitor.json" ]
+}
+has_script() {
+    [ -f "/opt/unix-storage-monitor/unix-storage-monitor.py" ]
+}
+if has_config || has_script; then
+    echo -e "\033[1;33m[!]\033[0m Unix Storage Monitor is deprecated. Use unix-monitor instead (mount + storage + SMART + web UI)."
+    echo ""
+    echo -e "  Migrate to unix-monitor now? Your monitors will be preserved. [Y/n]: \c"
+    read_input_safe MIGRATE_CHOICE || true
+    if [[ ! "${MIGRATE_CHOICE:-y}" =~ ^[Nn]$ ]]; then
+        if command -v curl >/dev/null 2>&1; then
+            curl -fsSL "${MIGRATE_SCRIPT_URL}" | bash -s unix-storage-monitor
+        elif command -v wget >/dev/null 2>&1; then
+            wget -qO- "${MIGRATE_SCRIPT_URL}" | bash -s unix-storage-monitor
+        else
+            echo -e "\033[0;31m[✗]\033[0m curl or wget required for migration."
+            exit 1
+        fi
+        exit 0
+    fi
+else
+    echo -e "\033[1;33m[!]\033[0m Unix Storage Monitor is deprecated. Consider unix-monitor instead (mount + storage + SMART + web UI)."
+    echo -e "  Install unix-monitor instead? [Y/n]: \c"
+    read_input_safe USE_UNIX || true
+    if [[ ! "${USE_UNIX:-y}" =~ ^[Nn]$ ]]; then
+        if command -v curl >/dev/null 2>&1; then
+            curl -fsSL "${UNIX_INSTALL_URL}" | sudo bash
+        elif command -v wget >/dev/null 2>&1; then
+            wget -qO- "${UNIX_INSTALL_URL}" | sudo bash
+        else
+            echo -e "\033[0;31m[✗]\033[0m curl or wget required."
+            exit 1
+        fi
+        exit 0
+    fi
+fi
+
 if ! command -v python3 >/dev/null 2>&1; then
     warn "python3 not found."
     echo -e "Install python3 now? (y/N): \c"
