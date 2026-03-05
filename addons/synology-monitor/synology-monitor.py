@@ -392,6 +392,7 @@ def _count_unused_recovery(auth: Dict[str, Any]) -> int:
 
 GITHUB_REPO = "gsiscotty/Uptime.Kuma.Monitor.Tools"
 UPDATE_CHECK_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+UPDATE_INFO_REMOTE_PATH = "addons/synology-monitor/community-package/package/INFO"
 
 
 def _get_update_check_path() -> Path:
@@ -414,9 +415,13 @@ def _version_tuple(version: str) -> Tuple[int, ...]:
     return tuple(parts[:4])
 
 
-def _run_update_check() -> None:
-    """Fetch latest release from GitHub, compare with VERSION, save result. Runs in background."""
-    result: Dict[str, Any] = {"checked_at": int(time.time()), "error": None, "latest_version": None, "update_available": False, "download_url": None}
+def _selected_update_channel(cfg: Optional[Dict[str, Any]] = None) -> str:
+    if cfg is None:
+        cfg = load_config()
+    return "main" if bool(cfg.get("update_from_main", False)) else "latest"
+
+
+def _fetch_latest_release_meta() -> Tuple[Optional[str], Optional[str], Optional[str]]:
     try:
         req = http.client.HTTPSConnection("api.github.com", timeout=10)
         req.request("GET", f"/repos/{GITHUB_REPO}/releases/latest", headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "synology-monitor"})
@@ -424,24 +429,75 @@ def _run_update_check() -> None:
         data = resp.read().decode("utf-8", errors="ignore")
         req.close()
         if resp.status != 200:
-            result["error"] = f"HTTP {resp.status}"
-            _save_update_check_result(result)
-            return
+            return None, None, f"HTTP {resp.status}"
         obj = json.loads(data)
         tag = str(obj.get("tag_name", "") or "").strip().lstrip("vV")
         if not tag:
-            result["error"] = "No tag_name in response"
+            return None, None, "No tag_name in response"
+        download_url = None
+        for asset in obj.get("assets", []) or []:
+            if isinstance(asset, dict) and str(asset.get("name", "")).endswith("synology-monitor-basic.spk"):
+                download_url = str(asset.get("browser_download_url", "") or "").strip() or None
+                break
+        return tag, download_url, None
+    except Exception as e:
+        return None, None, str(e) if str(e) else type(e).__name__
+
+
+def _fetch_public_spk_version_from_info(ref: str) -> Tuple[Optional[str], Optional[str]]:
+    try:
+        req = http.client.HTTPSConnection("raw.githubusercontent.com", timeout=10)
+        ref_path = quote(ref, safe="")
+        req.request("GET", f"/{GITHUB_REPO}/{ref_path}/{UPDATE_INFO_REMOTE_PATH}", headers={"User-Agent": "synology-monitor"})
+        resp = req.getresponse()
+        data = resp.read().decode("utf-8", errors="ignore")
+        req.close()
+        if resp.status != 200:
+            return None, f"HTTP {resp.status}"
+        m = re.search(r'^version="([^"]+)"', data, flags=re.MULTILINE)
+        if not m:
+            return None, "No version in INFO"
+        return m.group(1).strip(), None
+    except Exception as e:
+        return None, str(e) if str(e) else type(e).__name__
+
+
+def _run_update_check(cfg: Optional[Dict[str, Any]] = None) -> None:
+    """Fetch selected source public SPK version, compare with VERSION, save result. Runs in background."""
+    channel = _selected_update_channel(cfg)
+    result: Dict[str, Any] = {
+        "checked_at": int(time.time()),
+        "error": None,
+        "latest_version": None,
+        "public_version": None,
+        "selected_channel": channel,
+        "selected_ref": None,
+        "update_available": False,
+        "download_url": None,
+    }
+    try:
+        if channel == "main":
+            ref = "main"
+        else:
+            tag, download_url, tag_err = _fetch_latest_release_meta()
+            if tag_err or not tag:
+                result["error"] = tag_err or "Failed to resolve latest release"
+                _save_update_check_result(result)
+                return
+            ref = tag
+            result["download_url"] = download_url
+        result["selected_ref"] = ref
+        public_version, version_err = _fetch_public_spk_version_from_info(ref)
+        if version_err or not public_version:
+            result["error"] = version_err or "Failed to resolve public version"
             _save_update_check_result(result)
             return
-        result["latest_version"] = tag
+
+        result["public_version"] = public_version
+        result["latest_version"] = public_version
         current = _version_tuple(VERSION)
-        latest = _version_tuple(tag)
+        latest = _version_tuple(public_version)
         result["update_available"] = latest > current
-        if result["update_available"]:
-            for asset in obj.get("assets", []) or []:
-                if isinstance(asset, dict) and str(asset.get("name", "")).endswith("synology-monitor-basic.spk"):
-                    result["download_url"] = str(asset.get("browser_download_url", "") or "").strip()
-                    break
     except Exception as e:
         result["error"] = str(e) if str(e) else type(e).__name__
     _save_update_check_result(result)
@@ -2466,6 +2522,9 @@ def load_config() -> Dict[str, Any]:
         return {"monitors": []}
 
     changed = False
+    if "update_from_main" not in cfg:
+        cfg["update_from_main"] = False
+        changed = True
     monitors = [m for m in cfg.get("monitors", []) if isinstance(m, dict)]
     for monitor in monitors:
         cleaned = normalize_kuma_url(monitor.get("kuma_url", ""))
@@ -4456,16 +4515,41 @@ def _render_setup_html(
     source_scope_text = f"Viewing local source: {local_source_name}."
     repo_url = "https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools"
     update_hint = "This checker tracks Synology package (SPK) versions. Reinstall via Package Center, script, or download SPK from GitHub releases."
+    update_from_main = bool(cfg.get("update_from_main", False))
+    selected_channel = "main" if update_from_main else "latest"
+    selected_channel_label = "main branch" if update_from_main else "latest release"
+    update_curl_cmd = (
+        "curl -sSL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/synology-monitor/install.sh"
+        f" | sudo env UNIX_MONITOR_UPDATE_CHANNEL={selected_channel} bash"
+    )
     update_check = _load_update_check_result()
-    update_available = bool(update_check.get("update_available"))
-    latest_version = str(update_check.get("latest_version", "") or "").strip() or None
+    latest_version = str(update_check.get("public_version", "") or update_check.get("latest_version", "") or "").strip() or None
+    cached_channel = str(update_check.get("selected_channel", "") or "")
+    channel_matches_cache = (cached_channel == selected_channel) or (not cached_channel and selected_channel == "latest")
+    if not channel_matches_cache:
+        latest_version = None
+    update_available = channel_matches_cache and bool(update_check.get("update_available")) and bool(latest_version and _version_tuple(VERSION) < _version_tuple(latest_version))
     update_check_error = str(update_check.get("error", "") or "").strip() or None
+    if not channel_matches_cache:
+        update_check_error = None
     update_checked_at = int(update_check.get("checked_at", 0) or 0)
     update_checked_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(update_checked_at)) if update_checked_at else None
     update_download_url = str(update_check.get("download_url", "") or "").strip() or None
     package_badge = ""
     if update_available and latest_version:
         package_badge = f" <span class='update-badge'>Update: {html.escape(latest_version)}</span>"
+    from_main_enable_class = "autoupdate-btn autoupdate-btn-active" if update_from_main else "autoupdate-btn"
+    from_main_disable_class = "autoupdate-btn autoupdate-btn-active" if not update_from_main else "autoupdate-btn"
+    package_source_controls = (
+        "<div class='autoupdate-row'>"
+        "<form method='post' action='/settings/save-update-from-main' class='autoupdate-form' style='display:inline;'>"
+        "<input type='hidden' name='update_from_main' value='1'>"
+        "<button type='submit' class='" + from_main_enable_class + "'>Update from main</button></form>"
+        " <form method='post' action='/settings/save-update-from-main' class='autoupdate-form' style='display:inline;'>"
+        "<input type='hidden' name='update_from_main' value='0'>"
+        "<button type='submit' class='" + from_main_disable_class + "'>Update from latest</button></form>"
+        "<span class='autoupdate-hint'>Update source controls which public SPK version is checked.</span></div>"
+    )
     package_panel_lines: List[str] = []
     if update_checked_text:
         package_panel_lines.append(f"Last checked: {update_checked_text}")
@@ -4479,6 +4563,9 @@ def _render_setup_html(
         package_panel_lines.append(f"SPK up to date ({VERSION})")
     if not package_panel_lines:
         package_panel_lines.append("Update check runs on login. Log in to see status.")
+    package_panel_lines.append(
+        f"Selected source: {selected_channel_label} | Local SPK: {VERSION} | Public SPK ({selected_channel}): {latest_version or 'unknown'}"
+    )
     package_panel_lines.append("")
     package_panel_lines.append(update_hint)
     package_panel_html = "<pre>" + html.escape("\n".join(package_panel_lines)) + "</pre>"
@@ -4506,7 +4593,7 @@ def _render_setup_html(
         f"<div class='card server-action-panel' data-server-panel='name'><h4>Change server name</h4><form method='post' action='/settings/save-instance-name'><label>Instance Name</label><input name='instance_name' value='{html.escape(str(cfg.get('instance_name', '') or ''))}' placeholder='e.g. GSIARR01-AGENT'><div class='button-row'><button type='submit'>Save name</button></div></form></div>"
         f"<div class='card server-action-panel' data-server-panel='ip'><h4>System IP addresses</h4><pre>{html.escape(ip_list_text)}</pre></div>"
         f"<div class='card server-action-panel' data-server-panel='time'><h4>Time</h4><pre>Current time: {html.escape(now_text)}\n(System time on this NAS)</pre></div>"
-        f"<div class='card server-action-panel' data-server-panel='package'><h4>Synology SPK update</h4>{update_ready_banner}<div class='button-row'><a class='btn-inline' href='{html.escape(repo_url)}' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a></div>{package_download_btn}{package_panel_html}</div>"
+        f"<div class='card server-action-panel' data-server-panel='package'><h4>Synology SPK update</h4>{update_ready_banner}{package_source_controls}<div class='button-row'><a class='btn-inline' href='{html.escape(repo_url)}' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a> <form method='post' action='/settings/recheck-updates' style='display:inline;'><button type='submit' class='btn-inline btn-inline-muted'>Recheck for updates</button></form></div>{package_download_btn}{package_panel_html}<pre>{html.escape(update_curl_cmd)}</pre></div>"
         f"<div class='card server-action-panel' data-server-panel='login'><h4>Recent login events (IP + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
         f"<div class='card server-action-panel' data-server-panel='login-time'><h4>Recent login events (time + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
         "</div>"
@@ -4969,6 +5056,15 @@ def _render_setup_html(
     .server-action-panel[data-server-panel='package'] .button-row {{ justify-content:flex-start; }}
     .btn-inline {{ display:inline-block; padding:9px 14px; border:1px solid #36517a; border-radius:8px; text-decoration:none; color:#c8dbf8; font-weight:600; }}
     .btn-inline:hover {{ background: rgba(54,81,122,.25); }}
+    .btn-inline-muted {{ color: #8fa1b8; border-color: #2f425e; }}
+    .btn-inline-muted:hover {{ background: rgba(47,66,94,.28); color: #c4d7f1; }}
+    .autoupdate-row {{ margin-bottom:12px; display:flex; flex-wrap:wrap; align-items:center; gap:8px; }}
+    .autoupdate-form {{ margin:0; }}
+    .autoupdate-btn {{ padding:8px 14px; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; border:1px solid #36517a; background:transparent; color:#8fa1b8; transition:all .15s ease; }}
+    .autoupdate-btn:hover {{ background:rgba(54,81,122,.25); color:#c8dbf8; }}
+    .autoupdate-btn-active {{ background:linear-gradient(180deg,rgba(87,156,255,.35),rgba(47,128,237,.28)); border-color:#4c8ff6; color:#eaf4ff; }}
+    .autoupdate-btn-active:hover {{ background:linear-gradient(180deg,rgba(87,156,255,.45),rgba(47,128,237,.38)); }}
+    .autoupdate-hint {{ font-size:12px; color:var(--muted); margin-left:4px; }}
     .update-ready-banner {{ margin-bottom:12px; padding:10px 12px; background:rgba(47,128,237,.12); border:1px solid rgba(76,143,246,.35); border-radius:8px; display:flex; flex-wrap:wrap; align-items:center; gap:8px; }}
     .server-info-item strong {{ font-size:13px; color:#d9e8ff; }}
     .update-badge {{ display:inline-block; margin-left:6px; padding:2px 6px; font-size:11px; font-weight:600; color:#4c8ff6; background:rgba(76,143,246,.15); border-radius:6px; }}
@@ -7752,6 +7848,8 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 return
             if self.path not in (
                 "/settings/save-instance-name",
+                "/settings/save-update-from-main",
+                "/settings/recheck-updates",
                 "/save",
                 "/run-check",
                 "/run-check-monitor",
@@ -7821,6 +7919,48 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     self._reply_html(_render_setup_html(
                         security_message="Instance name saved.",
                         ui_view="settings",
+                        ssl_warning=ssl_warning,
+                    ))
+                    return
+                if self.path == "/settings/save-update-from-main":
+                    raw_len = int(self.headers.get("Content-Length", "0"))
+                    body = self.rfile.read(raw_len).decode("utf-8", errors="ignore")
+                    form = parse_qs(body, keep_blank_values=True)
+                    vals = form.get("update_from_main", []) or []
+                    enabled = "1" in vals
+                    cfg = load_config()
+                    cfg["update_from_main"] = enabled
+                    save_config(cfg, reapply_cron=False)
+                    _run_update_check(cfg)
+                    check = _load_update_check_result()
+                    public_version = str(check.get("public_version", "") or check.get("latest_version", "") or "")
+                    selected = "main branch" if enabled else "latest release"
+                    append_ui_log(f"settings | update source set to {selected}")
+                    self._reply_html(_render_setup_html(
+                        security_message="Update source set to " + selected + (f". Public SPK version: {public_version}." if public_version else "."),
+                        ui_view=ui_view,
+                        ssl_warning=ssl_warning,
+                    ))
+                    return
+                if self.path == "/settings/recheck-updates":
+                    cfg = load_config()
+                    _run_update_check(cfg)
+                    check = _load_update_check_result()
+                    selected_channel = str(check.get("selected_channel", "") or ("main" if bool(cfg.get("update_from_main", False)) else "latest"))
+                    public_version = str(check.get("public_version", "") or check.get("latest_version", "") or "")
+                    err = str(check.get("error", "") or "").strip()
+                    if err:
+                        append_ui_log(f"settings | recheck updates failed ({selected_channel}): {err}")
+                        self._reply_html(_render_setup_html(
+                            error=f"Recheck failed ({selected_channel}): {err}",
+                            ui_view=ui_view,
+                            ssl_warning=ssl_warning,
+                        ))
+                        return
+                    append_ui_log(f"settings | recheck updates ok ({selected_channel}) public={public_version or '?'} local={VERSION}")
+                    self._reply_html(_render_setup_html(
+                        security_message=f"Rechecked updates ({selected_channel}). Local SPK: {VERSION}. Public SPK: {public_version or 'unknown'}.",
+                        ui_view=ui_view,
                         ssl_warning=ssl_warning,
                     ))
                     return

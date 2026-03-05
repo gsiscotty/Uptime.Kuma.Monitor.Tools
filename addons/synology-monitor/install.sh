@@ -13,9 +13,17 @@ set -euo pipefail
 
 REPO="gsiscotty/Uptime.Kuma.Monitor.Tools"
 BRANCH="main"
+UPDATE_CHANNEL="${UNIX_MONITOR_UPDATE_CHANNEL:-}"
+if [ "${UNIX_MONITOR_USE_MAIN:-0}" = "1" ]; then
+    UPDATE_CHANNEL="main"
+fi
+if [ "${UPDATE_CHANNEL}" != "main" ] && [ "${UPDATE_CHANNEL}" != "latest" ]; then
+    UPDATE_CHANNEL="latest"
+fi
+REF="${BRANCH}"
 SCRIPT_NAME="synology-monitor.py"
 REMOTE_PATH="addons/synology-monitor/${SCRIPT_NAME}"
-RAW_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${REMOTE_PATH}"
+RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${REMOTE_PATH}"
 DEFAULT_INSTALL_DIR="/opt/synology-monitor"
 MIN_PYTHON_MAJOR=3
 MIN_PYTHON_MINOR=8
@@ -37,6 +45,41 @@ fi
 info()  { echo -e "${GREEN}[ok]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
 err()   { echo -e "${RED}[x]${NC} $*"; }
+
+resolve_ref_from_channel() {
+    REF="${BRANCH}"
+    if [ "${UPDATE_CHANNEL}" = "main" ]; then
+        return 0
+    fi
+    local tag=""
+    if command -v curl >/dev/null 2>&1; then
+        tag=$(curl -sfL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep -o '"tag_name":[[:space:]]*"[^"]*"' | sed 's/"tag_name":[[:space:]]*"\([^"]*\)"/\1/' | head -n 1)
+    elif command -v wget >/dev/null 2>&1; then
+        tag=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep -o '"tag_name":[[:space:]]*"[^"]*"' | sed 's/"tag_name":[[:space:]]*"\([^"]*\)"/\1/' | head -n 1)
+    fi
+    [ -n "${tag}" ] && REF="${tag}"
+}
+
+detect_local_version() {
+    local script_path="$1"
+    if [ ! -f "${script_path}" ]; then
+        echo ""
+        return 0
+    fi
+    sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' "${script_path}" | head -n 1
+}
+
+fetch_public_version_for_ref() {
+    local ref="$1"
+    local url="https://raw.githubusercontent.com/${REPO}/${ref}/${REMOTE_PATH}"
+    local content=""
+    if command -v curl >/dev/null 2>&1; then
+        content="$(curl -fsSL "${url}" 2>/dev/null || true)"
+    elif command -v wget >/dev/null 2>&1; then
+        content="$(wget -qO- "${url}" 2>/dev/null || true)"
+    fi
+    printf '%s\n' "${content}" | sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' | head -n 1
+}
 
 echo ""
 echo -e "${BOLD}EasySystems GmbH - Kuma Monitor Addon Installer${NC}"
@@ -70,6 +113,19 @@ fi
 echo -e "Install directory [${BOLD}${DEFAULT_INSTALL_DIR}${NC}]: \c"
 read_input CUSTOM_DIR || true
 INSTALL_DIR="${CUSTOM_DIR:-${DEFAULT_INSTALL_DIR}}"
+
+resolve_ref_from_channel
+RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${REMOTE_PATH}"
+LOCAL_VERSION="$(detect_local_version "${INSTALL_DIR}/${SCRIPT_NAME}")"
+PUBLIC_VERSION="$(fetch_public_version_for_ref "${REF}")"
+if [ -z "${PUBLIC_VERSION}" ] && [ "${REF}" != "main" ]; then
+    warn "Selected ref ${REF} missing synology monitor script; falling back to main for version check."
+    PUBLIC_VERSION="$(fetch_public_version_for_ref "main")"
+fi
+echo ""
+info "Selected update source: ${UPDATE_CHANNEL} (ref: ${REF})"
+info "Local version: ${LOCAL_VERSION:-unknown}"
+info "Public (${UPDATE_CHANNEL}) version: ${PUBLIC_VERSION:-unknown}"
 
 if [ ! -d "${INSTALL_DIR}" ]; then
     warn "Directory ${INSTALL_DIR} does not exist."
