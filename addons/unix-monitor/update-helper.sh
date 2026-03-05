@@ -53,15 +53,30 @@ fi
 cp -a "${SCRIPT}" "${BACKUP}"
 echo "Backed up to ${BACKUP}"
 
-# 2) Download
-if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "${URL}" -o "${NEW}"
-elif command -v wget >/dev/null 2>&1; then
-    wget -qO "${NEW}" "${URL}"
-else
-    echo "ERROR: curl or wget required"
-    rm -f "${NEW}"
-    exit 1
+# 2) Download (fall back to main if release tag lacks unix-monitor addon)
+do_download() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "${URL}" -o "${NEW}"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "${NEW}" "${URL}"
+    else
+        echo "ERROR: curl or wget required"
+        rm -f "${NEW}"
+        exit 1
+    fi
+}
+
+if ! do_download; then
+    if [ "${REF}" != "main" ]; then
+        echo "Release ${REF} missing unix-monitor addon, falling back to main branch."
+        REF="main"
+        URL="https://raw.githubusercontent.com/${REPO}/${REF}/addons/unix-monitor/${SCRIPT_NAME}"
+        do_download
+    else
+        echo "ERROR: Download failed"
+        rm -f "${NEW}"
+        exit 1
+    fi
 fi
 
 if [ ! -s "${NEW}" ]; then

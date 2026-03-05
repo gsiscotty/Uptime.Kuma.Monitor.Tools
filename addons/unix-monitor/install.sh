@@ -380,27 +380,43 @@ fi
 
 TARGET="${INSTALL_DIR}/${SCRIPT_NAME}"
 UNINSTALL_TARGET="${INSTALL_DIR}/${UNINSTALL_NAME}"
-
-info "Downloading ${SCRIPT_NAME}..."
-if [ "${DOWNLOADER}" = "curl" ]; then
-    curl -fsSL "${SCRIPT_RAW_URL}" -o "${TARGET}"
-else
-    wget -qO "${TARGET}" "${SCRIPT_RAW_URL}"
-fi
-
-info "Downloading ${UNINSTALL_NAME}..."
-if [ "${DOWNLOADER}" = "curl" ]; then
-    curl -fsSL "${UNINSTALL_RAW_URL}" -o "${UNINSTALL_TARGET}"
-else
-    wget -qO "${UNINSTALL_TARGET}" "${UNINSTALL_RAW_URL}"
-fi
-
 UPDATE_HELPER_TARGET="${INSTALL_DIR}/${UPDATE_HELPER_NAME}"
-info "Downloading ${UPDATE_HELPER_NAME}..."
-if [ "${DOWNLOADER}" = "curl" ]; then
-    curl -fsSL "${UPDATE_HELPER_RAW_URL}" -o "${UPDATE_HELPER_TARGET}"
-else
-    wget -qO "${UPDATE_HELPER_TARGET}" "${UPDATE_HELPER_RAW_URL}"
+
+do_downloads() {
+    info "Downloading ${SCRIPT_NAME}..."
+    if [ "${DOWNLOADER}" = "curl" ]; then
+        curl -fsSL "${SCRIPT_RAW_URL}" -o "${TARGET}"
+    else
+        wget -qO "${TARGET}" "${SCRIPT_RAW_URL}"
+    fi
+
+    info "Downloading ${UNINSTALL_NAME}..."
+    if [ "${DOWNLOADER}" = "curl" ]; then
+        curl -fsSL "${UNINSTALL_RAW_URL}" -o "${UNINSTALL_TARGET}"
+    else
+        wget -qO "${UNINSTALL_TARGET}" "${UNINSTALL_RAW_URL}"
+    fi
+
+    info "Downloading ${UPDATE_HELPER_NAME}..."
+    if [ "${DOWNLOADER}" = "curl" ]; then
+        curl -fsSL "${UPDATE_HELPER_RAW_URL}" -o "${UPDATE_HELPER_TARGET}"
+    else
+        wget -qO "${UPDATE_HELPER_TARGET}" "${UPDATE_HELPER_RAW_URL}"
+    fi
+}
+
+if ! do_downloads; then
+    if [ "${REF}" != "${BRANCH}" ]; then
+        warn "Release ${REF} missing unix-monitor addon, falling back to main branch."
+        REF="${BRANCH}"
+        SCRIPT_RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${SCRIPT_REMOTE_PATH}"
+        UNINSTALL_RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${UNINSTALL_REMOTE_PATH}"
+        UPDATE_HELPER_RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${UPDATE_HELPER_REMOTE_PATH}"
+        do_downloads
+    else
+        err "Download failed."
+        exit 1
+    fi
 fi
 
 if [ ! -s "${TARGET}" ] || [ ! -s "${UNINSTALL_TARGET}" ] || [ ! -s "${UPDATE_HELPER_TARGET}" ]; then
