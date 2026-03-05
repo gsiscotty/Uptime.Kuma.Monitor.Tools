@@ -5079,14 +5079,17 @@ def _render_setup_html(
     autoupdate_enabled = bool(cfg.get("autoupdate_enabled", False))
     package_update_btns = ""
     if not source_is_remote:
+        enable_btn_class = "autoupdate-btn autoupdate-btn-active" if autoupdate_enabled else "autoupdate-btn"
+        disable_btn_class = "autoupdate-btn autoupdate-btn-active" if not autoupdate_enabled else "autoupdate-btn"
         autoupdate_form = (
             "<div class='autoupdate-row'>"
-            "<form method='post' action='/settings/save-autoupdate' class='autoupdate-form'>"
+            "<form method='post' action='/settings/save-autoupdate' class='autoupdate-form' style='display:inline;'>"
+            "<input type='hidden' name='autoupdate_enabled' value='1'>"
+            "<button type='submit' class='" + enable_btn_class + "'>Enable autoupdate</button></form>"
+            " <form method='post' action='/settings/save-autoupdate' class='autoupdate-form' style='display:inline;'>"
             "<input type='hidden' name='autoupdate_enabled' value='0'>"
-            "<label class='autoupdate-label'>"
-            f"<input type='checkbox' name='autoupdate_enabled' value='1'"
-            + (" checked" if autoupdate_enabled else "")
-            + " onchange='this.form.submit()'> Enable autoupdate (check on each visit, apply if newer)</label></form></div>"
+            "<button type='submit' class='" + disable_btn_class + "'>Disable autoupdate</button></form>"
+            "<span class='autoupdate-hint'>Check on each visit, apply if newer.</span></div>"
         )
         package_update_btns = autoupdate_form
         if has_update_helper:
@@ -5361,10 +5364,13 @@ def _render_setup_html(
     .server-action-panel {{ display:none; border-color:rgba(76,143,246,.3); }}
     .server-action-panel.open {{ display:block; }}
     .server-action-panel[data-server-panel='package'] {{ text-align:left; }}
-    .autoupdate-row {{ margin-bottom:12px; }}
+    .autoupdate-row {{ margin-bottom:12px; display:flex; flex-wrap:wrap; align-items:center; gap:8px; }}
     .autoupdate-form {{ margin:0; }}
-    .autoupdate-label {{ display:flex; flex-direction:row; align-items:center; gap:8px; cursor:pointer; font-size:13px; flex-wrap:nowrap; }}
-    .autoupdate-label input[type="checkbox"] {{ flex-shrink:0; order:-1; accent-color:#2f80ed; }}
+    .autoupdate-btn {{ padding:8px 14px; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; border:1px solid #36517a; background:transparent; color:#8fa1b8; transition:all .15s ease; }}
+    .autoupdate-btn:hover {{ background:rgba(54,81,122,.25); color:#c8dbf8; }}
+    .autoupdate-btn-active {{ background:linear-gradient(180deg,rgba(87,156,255,.35),rgba(47,128,237,.28)); border-color:#4c8ff6; color:#eaf4ff; }}
+    .autoupdate-btn-active:hover {{ background:linear-gradient(180deg,rgba(87,156,255,.45),rgba(47,128,237,.38)); }}
+    .autoupdate-hint {{ font-size:12px; color:var(--muted); margin-left:4px; }}
     .server-action-panel[data-server-panel='package'] .button-row {{ justify-content:flex-start; }}
     .btn-inline {{ display:inline-block; padding:9px 14px; border:1px solid #36517a; border-radius:8px; text-decoration:none; color:#c8dbf8; font-weight:600; }}
     .btn-inline:hover {{ background: rgba(54,81,122,.25); }}
