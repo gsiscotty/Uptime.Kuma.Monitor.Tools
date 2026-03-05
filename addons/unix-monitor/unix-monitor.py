@@ -5912,25 +5912,39 @@ def _render_setup_html(
               headers: {{ "Content-Type": "application/x-www-form-urlencoded" }},
               body: "peer_id=" + encodeURIComponent(peerId)
             }});
+            var rawText = "";
+            try {{ rawText = await r.text(); }} catch (e) {{ rawText = String(e); }}
             var data = null;
-            try {{ data = await r.json(); }} catch (e) {{}}
+            try {{ data = rawText ? JSON.parse(rawText) : null; }} catch (e) {{}}
+            var errMsg = (data && data.error) ? String(data.error) : "Failed to start update";
+            var diag = "HTTP " + r.status + " | " + errMsg;
+            if (rawText && rawText.length > 0 && rawText.length < 500) diag += " | Response: " + rawText.replace(/\\n/g, " ").trim();
+            else if (rawText && rawText.length >= 500) diag += " | Response: " + rawText.substring(0, 200) + "...";
+            var diagAttr = (diag || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
             if (!r.ok || !data || data.error) {{
-              mContent.innerHTML = "<p class='err'>" + escapeHtml(data && data.error ? data.error : "Failed to start update") + "</p>";
+              mContent.innerHTML = "<p class='err' title='" + diagAttr + "'>" + escapeHtml(errMsg) + "</p><p class='muted' style='font-size:11px;margin-top:4px;'>Hover for diagnostics</p>";
+              mContent.innerHTML += "<p><button type='button' class='close-link' onclick=\\"document.getElementById('agent-update-modal').classList.remove('open')\\">Close</button></p>";
               btn.disabled = false;
               return;
             }}
             var sessionId = data.session_id;
             if (!sessionId) {{
               mContent.innerHTML = "<p class='err'>No session ID returned</p>";
+              mContent.innerHTML += "<p><button type='button' class='close-link' onclick=\\"document.getElementById('agent-update-modal').classList.remove('open')\\">Close</button></p>";
               btn.disabled = false;
               return;
             }}
             var pollInterval = setInterval(async function() {{
               try {{
                 var sr = await fetch("/api/agent-update-status?peer_id=" + encodeURIComponent(peerId) + "&session_id=" + encodeURIComponent(sessionId), {{ credentials: "same-origin" }});
-                var sdata = sr.ok ? await sr.json() : {{}};
+                var sraw = "";
+                try {{ sraw = await sr.text(); }} catch (e) {{ sraw = String(e); }}
+                var sdata = sr.ok && sraw ? (function() {{ try {{ return JSON.parse(sraw); }} catch(e) {{ return {{}}; }} }})() : {{}};
                 if (sdata.error && !sdata.log) {{
-                  mContent.innerHTML = "<p class='err'>" + escapeHtml(sdata.error) + "</p>";
+                  var sdiag = "HTTP " + sr.status + " | " + (sdata.error || sraw || "").toString().replace(/\\n/g, " ");
+                  var sdiagAttr = (sdiag || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                  mContent.innerHTML = "<p class='err' title='" + sdiagAttr + "'>" + escapeHtml(sdata.error) + "</p><p class='muted' style='font-size:11px;margin-top:4px;'>Hover for diagnostics</p>";
+                  mContent.innerHTML += "<p><button type='button' class='close-link' onclick=\\"document.getElementById('agent-update-modal').classList.remove('open')\\">Close</button></p>";
                   clearInterval(pollInterval);
                   btn.disabled = false;
                   return;
@@ -5956,6 +5970,7 @@ def _render_setup_html(
             }}, 600);
           }} catch (e) {{
             mContent.innerHTML = "<p class='err'>" + escapeHtml(String(e)) + "</p>";
+            mContent.innerHTML += "<p><button type='button' class='close-link' onclick=\\"document.getElementById('agent-update-modal').classList.remove('open')\\">Close</button></p>";
             btn.disabled = false;
           }}
         }}, true);
@@ -7665,7 +7680,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 self._reply_peer_json({"status": "ok", "created": m_name}, 201)
                 return
             if self.path == "/api/peer/update":
-                if not self._require_peer_mtls():
+                if not self._require_peer_mtls(allow_token_only=True):
                     return
                 if not self._verify_peer_token():
                     self._reply_json({"error": "unauthorized"}, 401)
