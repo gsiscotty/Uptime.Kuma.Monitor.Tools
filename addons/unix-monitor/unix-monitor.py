@@ -1713,18 +1713,33 @@ def _load_update_check_result() -> Dict[str, Any]:
         return {}
 
 
-def _maybe_run_autoupdate() -> None:
-    """Background: if autoupdate enabled, check for updates; if available, run update. Throttled."""
+def _get_autoupdate_on_logout_flag_path() -> Path:
+    return get_runtime_data_dir() / "unix-autoupdate-on-logout.flag"
+
+
+def _maybe_run_autoupdate(defer_if_user_logged_in: bool = True) -> None:
+    """Background: if autoupdate enabled, check for updates. If available and not deferred, run update. Throttled.
+    When defer_if_user_logged_in=True (page load), only check and save result; do not apply.
+    When defer_if_user_logged_in=False (e.g. logout), apply update if available."""
     try:
         cfg = load_config()
         if not cfg.get("autoupdate_enabled"):
             return
         last = _load_update_check_result()
         last_ts = int(last.get("checked_at", 0) or 0)
-        if time.time() - last_ts < AUTOUPDATE_CHECK_INTERVAL_SEC:
+        if defer_if_user_logged_in:
+            if time.time() - last_ts < AUTOUPDATE_CHECK_INTERVAL_SEC:
+                return
+            result = _run_update_check()
+            _save_update_check_result(result)
+            if not result.get("update_available"):
+                return
             return
-        result = _run_update_check()
-        _save_update_check_result(result)
+        if (time.time() - last_ts < 3600) and last.get("update_available"):
+            result = last
+        else:
+            result = _run_update_check()
+            _save_update_check_result(result)
         if not result.get("update_available"):
             return
         helper = get_update_helper_path()
@@ -5077,12 +5092,28 @@ def _render_setup_html(
     has_update_helper = get_update_helper_path().exists()
     has_backup = (get_script_path().parent / "unix-monitor.py.prev").exists()
     autoupdate_enabled = bool(cfg.get("autoupdate_enabled", False))
+    update_check_result = _load_update_check_result() if not source_is_remote else {}
+    update_available = bool(update_check_result.get("update_available"))
+    latest_version = str(update_check_result.get("latest_version", "") or "")
     package_update_btns = ""
     if not source_is_remote:
+        update_ready_banner = ""
+        if autoupdate_enabled and update_available and has_update_helper:
+            ver_text = f" (v{html.escape(latest_version)})" if latest_version else ""
+            update_ready_banner = (
+                "<div class='update-ready-banner'>"
+                "<span>An update is available" + ver_text + ". </span>"
+                "<form method='post' action='/self-update' style='display:inline;' onsubmit='return confirm(\"Update now? Config and data will be preserved. Page will reload after update.\");'>"
+                "<button type='submit' class='btn-inline'>Update now</button></form>"
+                " <form method='post' action='/settings/request-autoupdate-on-logout' style='display:inline;'>"
+                "<button type='submit' class='btn-inline btn-inline-muted'>Update after logout</button></form>"
+                "</div>"
+            )
         enable_btn_class = "autoupdate-btn autoupdate-btn-active" if autoupdate_enabled else "autoupdate-btn"
         disable_btn_class = "autoupdate-btn autoupdate-btn-active" if not autoupdate_enabled else "autoupdate-btn"
         autoupdate_form = (
-            "<div class='autoupdate-row'>"
+            update_ready_banner
+            + "<div class='autoupdate-row'>"
             "<form method='post' action='/settings/save-autoupdate' class='autoupdate-form' style='display:inline;'>"
             "<input type='hidden' name='autoupdate_enabled' value='1'>"
             "<button type='submit' class='" + enable_btn_class + "'>Enable autoupdate</button></form>"
@@ -5374,6 +5405,8 @@ def _render_setup_html(
     .server-action-panel[data-server-panel='package'] .button-row {{ justify-content:flex-start; }}
     .btn-inline {{ display:inline-block; padding:9px 14px; border:1px solid #36517a; border-radius:8px; text-decoration:none; color:#c8dbf8; font-weight:600; }}
     .btn-inline:hover {{ background: rgba(54,81,122,.25); }}
+    .btn-inline-muted {{ border-color:#3f5f88; color:#8fa1b8; }}
+    .update-ready-banner {{ margin-bottom:12px; padding:10px 12px; background:rgba(47,128,237,.12); border:1px solid rgba(76,143,246,.35); border-radius:8px; display:flex; flex-wrap:wrap; align-items:center; gap:8px; }}
     .server-info-item strong {{ font-size:13px; color:#d9e8ff; }}
     .modal-backdrop {{ position: fixed; inset: 0; background: rgba(5,10,20,.74); display: none; align-items: center; justify-content: center; z-index: 2000; }}
     .modal-backdrop.open {{ display: flex; }}
@@ -7781,6 +7814,16 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     body = self.rfile.read(raw_len).decode("utf-8", errors="ignore")
                     form = parse_qs(body, keep_blank_values=True)
                 if self.path == "/auth/logout":
+                    flag_path = _get_autoupdate_on_logout_flag_path()
+                    if flag_path.exists():
+                        try:
+                            flag_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        threading.Thread(
+                            target=lambda: _maybe_run_autoupdate(defer_if_user_logged_in=False),
+                            daemon=True,
+                        ).start()
                     self._redirect(
                         "/auth/login",
                         extra_headers=[
@@ -8089,6 +8132,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
             if self.path not in (
                 "/settings/save-instance-name",
                 "/settings/save-autoupdate",
+                "/settings/request-autoupdate-on-logout",
                 "/save",
                 "/run-check",
                 "/run-check-monitor",
@@ -8143,6 +8187,21 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     append_ui_log(f"settings | autoupdate {'enabled' if enabled else 'disabled'}")
                     self._reply_html(_render_setup_html(
                         security_message="Autoupdate " + ("enabled" if enabled else "disabled") + ".",
+                        ui_view=ui_view,
+                        ssl_warning=ssl_warning,
+                        open_server_panel="package",
+                    ))
+                    return
+                if self.path == "/settings/request-autoupdate-on-logout":
+                    flag_path = _get_autoupdate_on_logout_flag_path()
+                    try:
+                        flag_path.parent.mkdir(parents=True, exist_ok=True)
+                        flag_path.write_text("1", encoding="utf-8")
+                    except OSError:
+                        pass
+                    append_ui_log("settings | autoupdate will run on next logout")
+                    self._reply_html(_render_setup_html(
+                        security_message="Update will run when you log out. You can keep working until then.",
                         ui_view=ui_view,
                         ssl_warning=ssl_warning,
                         open_server_panel="package",
