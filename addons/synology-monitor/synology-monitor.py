@@ -4387,11 +4387,25 @@ def _render_setup_html(
         status_html += f"<pre>{html.escape(action_output)}</pre>"
     if ssl_warning:
         status_html = f"<div class='err'>{html.escape(ssl_warning)}</div>" + status_html
-    log_source = (log_source or "local").strip()
+    peer_role = str(cfg.get("peer_role", "standalone") or "standalone").lower()
+    peer_snapshots = _load_all_peer_snapshots() if peer_role == "master" else []
+    snapshot_by_id: Dict[str, Dict[str, Any]] = {}
+    for snap in peer_snapshots:
+        snap_id = str(snap.get("instance_id", "") or "").strip()
+        if _is_valid_peer_instance_id(snap_id):
+            snapshot_by_id[snap_id] = snap
+    source_label = (log_source or "local").strip()
+    if peer_role != "master":
+        source_label = "local"
+    elif source_label != "local" and source_label not in snapshot_by_id:
+        source_label = "local"
+    selected_snapshot = snapshot_by_id.get(source_label) if source_label != "local" else None
+    source_is_remote = selected_snapshot is not None
+
     agent_log_async = False
-    if log_source != "local" and diag_view in ("logs", "config", "history", "cache", "system"):
+    if source_is_remote and diag_view in ("logs", "config", "history", "cache", "system"):
         if diagnose_agent:
-            log_text = _diagnose_agent_diag_connection(cfg, log_source)
+            log_text = _diagnose_agent_diag_connection(cfg, source_label)
         else:
             log_text = "Loading agent logs..."
             agent_log_async = True
@@ -4420,8 +4434,20 @@ def _render_setup_html(
     setup_state_css = "ok" if elevated_ok else "err"
 
     # Build monitor status map from history.
+    source_history: List[Dict[str, Any]] = []
+    if source_is_remote:
+        snap_hist = selected_snapshot.get("history", []) if selected_snapshot else []
+        source_history = [e for e in snap_hist if isinstance(e, dict)]
+    else:
+        source_history = history
+    source_monitors: List[Dict[str, Any]] = []
+    if source_is_remote:
+        snap_mons = selected_snapshot.get("monitors", []) if selected_snapshot else []
+        source_monitors = [m for m in snap_mons if isinstance(m, dict)]
+    else:
+        source_monitors = [m for m in monitors if isinstance(m, dict)]
     monitor_latest: Dict[str, Dict[str, Any]] = {}
-    for e in history:
+    for e in source_history:
         name = str(e.get("monitor", ""))
         if name:
             monitor_latest[name] = e
@@ -4438,11 +4464,11 @@ def _render_setup_html(
     # Overview gauges based on configured channels.
     channels_order = ("smart", "storage", "ping", "port", "dns", "backup")
     overview_channels: List[str] = []
-    for m in monitors:
+    for m in source_monitors:
         mode = str(m.get("check_mode", "smart")).lower()
         if mode in channels_order and mode not in overview_channels:
             overview_channels.append(mode)
-    for e in history:
+    for e in source_history:
         ch = str(e.get("channel", "")).lower()
         if ch in channels_order and ch not in overview_channels:
             overview_channels.append(ch)
@@ -4452,7 +4478,7 @@ def _render_setup_html(
 
     channel_cards: List[str] = []
     for channel in overview_channels:
-        items = [e for e in history if str(e.get("channel")) == channel]
+        items = [e for e in source_history if str(e.get("channel")) == channel]
         latest = items[-1] if items else {}
         st = str(latest.get("status", "unknown"))
         pct = status_pct(st)
@@ -4463,7 +4489,7 @@ def _render_setup_html(
             for x in items[-20:]
         ) or "<span class='muted'>no history</span>"
         mapped = []
-        for m in monitors:
+        for m in source_monitors:
             mode = str(m.get("check_mode", "smart")).lower()
             if mode == channel:
                 mapped.append(str(m.get("name", "?")))
@@ -4479,7 +4505,7 @@ def _render_setup_html(
         channel_cards.append(
             f"<div class='overview-card {'hl-channel' if is_hl else ''}' data-channel='{channel}'>"
             f"<h4>{channel.capitalize()} Monitoring</h4>"
-            f"<a class='gauge-link' href='/?view=overview&diag_view=logs&log_filter={channel}&highlight={channel}'>"
+            f"<a class='gauge-link' href='/?view=overview&diag_view=logs&log_filter={channel}&highlight={channel}&log_source={html.escape(source_label)}'>"
             f"<div class='gauge {status_class(st)}' data-role='gauge' style='--pct:{pct}'>"
             f"<div class='gauge-center'><div class='gauge-value' data-role='gauge-value'>{status_label(st)}</div><div class='gauge-sub' data-role='gauge-sub'>{pct}%</div></div>"
             "</div>"
@@ -4491,13 +4517,23 @@ def _render_setup_html(
         )
     overview_html = "".join(channel_cards)
 
-    # Current Server info for overview
+    # Current Server info for overview (follows selected source)
     local_source_name = browser_instance_name or "synology-agent"
+    selected_source_name = local_source_name
     server_ip = _detect_primary_server_ip()
     now_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     last_login_ip = str(auth_state.get("last_login_ip", "") or "").strip() or "n/a"
     last_login_at_ts = int(auth_state.get("last_login_at", 0) or 0)
     last_login_at_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_login_at_ts)) if last_login_at_ts else "n/a"
+    if source_is_remote and selected_snapshot:
+        selected_source_name = str(selected_snapshot.get("instance_name", "") or source_label[:8] or "remote")
+        peer_entry = next((p for p in (cfg.get("peers", []) or []) if str(p.get("instance_id", "") or "").strip() == source_label), None)
+        peer_host, _peer_port = _parse_peer_host_port(str(peer_entry.get("url", "") or ""), PEER_DEFAULT_PORT) if isinstance(peer_entry, dict) else ("", PEER_DEFAULT_PORT)
+        server_ip = peer_host or "remote"
+        pushed_at = int(selected_snapshot.get("pushed_at", 0) or 0)
+        now_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(pushed_at)) if pushed_at else "n/a"
+        last_login_ip = "n/a (remote)"
+        last_login_at_text = "n/a (remote)"
     login_events = auth_state.get("login_history", []) or []
     if not isinstance(login_events, list):
         login_events = []
@@ -4512,7 +4548,11 @@ def _render_setup_html(
     login_history_text = "\n".join(login_lines) if login_lines else "No login events recorded."
     all_ips = _list_system_ips()
     ip_list_text = "\n".join(all_ips) if all_ips else "No IP addresses detected."
-    source_scope_text = f"Viewing local source: {local_source_name}."
+    source_scope_text = (
+        f"Viewing remote source: {selected_source_name} (overview and diagnostics scoped to this source)."
+        if source_is_remote
+        else f"Viewing local source: {selected_source_name}."
+    )
     repo_url = "https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools"
     update_hint = "This checker tracks Synology package (SPK) versions. Reinstall via Package Center, script, or download SPK from GitHub releases."
     update_from_main = bool(cfg.get("update_from_main", False))
@@ -4690,7 +4730,7 @@ def _render_setup_html(
     # Remote / agent monitor cards.
     remote_cards: List[str] = []
     if peer_role == "master":
-        for snap in _load_all_peer_snapshots():
+        for snap in peer_snapshots:
             snap_name = str(snap.get("instance_name", "") or str(snap.get("instance_id", ""))[:8])
             snap_history = snap.get("history", [])
             snap_state = snap.get("state", {})
@@ -4756,9 +4796,8 @@ def _render_setup_html(
         "paths": "paths",
         "system": "system",
     }.get((diag_view or "logs").lower(), "logs")
-    source_label = log_source if log_source else "local"
-    source_chips_html = ""
-    if peer_role == "master" and diag_label in ("logs", "config", "history", "cache", "system"):
+    source_tabs_html = ""
+    if peer_role == "master":
         q_base = f"view=overview&amp;diag_view={diag_label}&amp;log_filter={filter_label}"
         src_chips = [f"<a class='chip {'active' if source_label=='local' else ''}' href='?{q_base}&amp;log_source=local'>Local</a>"]
         for sp in (cfg.get("peers", []) or []):
@@ -4771,11 +4810,11 @@ def _render_setup_html(
                 f"href='?{q_base}&amp;log_source={html.escape(sp_id)}'>"
                 f"{html.escape(sp_name)}</a>"
             )
-        source_chips_html = (
-            "<span style='display:flex;gap:6px;align-items:center;margin-left:auto;'>"
+        source_tabs_html = (
+            "<div class='chip-row' style='flex-wrap:wrap;'>"
             "<span class='muted' style='font-size:11px;white-space:nowrap;'>Source:</span>"
             + "".join(src_chips)
-            + "</span>"
+            + "</div>"
         )
     modal_open = bool(create_mode or edit_original_name)
     modal_title = "Edit Monitor" if edit_original_name else "Create Monitor"
@@ -4854,14 +4893,16 @@ def _render_setup_html(
     )
     nav_html = (
         "<div class='card'><div class='chip-row nav-tabs'>"
-        + f"<a class='chip {'active' if ui_view=='overview' else ''}' href='/?view=overview&diag_view={diag_label}&log_filter={filter_label}'>Overview</a>"
+        + f"<a class='chip {'active' if ui_view=='overview' else ''}' href='/?view=overview&diag_view={diag_label}&log_filter={filter_label}&log_source={html.escape(source_label)}'>Overview</a>"
         + f"<a class='chip {'active' if ui_view=='setup' else ''}' href='/?view=setup'>Monitor Setup</a>"
         + f"<a class='chip {'active' if ui_view=='settings' else ''}' href='/?view=settings'>Settings</a>"
-        + "</div></div>"
+        + "</div>"
+        + (source_tabs_html if ui_view == "overview" else "")
+        + "</div>"
     )
     overview_view_html = f"""
       <div class="card">
-        <h3>Current Server <span class="badge muted-badge">{html.escape(local_source_name)}</span></h3>
+        <h3>Current Server <span class="badge muted-badge">{html.escape(selected_source_name)}</span></h3>
         <div class="muted" style="margin-bottom:8px;">{html.escape(source_scope_text)}</div>
         {server_info_card_html}
       </div>
@@ -4879,7 +4920,6 @@ def _render_setup_html(
           <a class="chip {'active' if diag_label=='history' else ''}" href="?view=overview&amp;diag_view=history&amp;log_source={html.escape(source_label)}">History</a>
           <a class="chip {'active' if diag_label=='paths' else ''}" href="?view=overview&amp;diag_view=paths&amp;log_source={html.escape(source_label)}">Paths</a>
           <a class="chip {'active' if diag_label=='system' else ''}" href="?view=overview&amp;diag_view=system&amp;log_source={html.escape(source_label)}">System</a>
-          {source_chips_html}
         </div>
         {"<div class='chip-row'><a class='chip " + ("active" if filter_label=='all' else "") + "' href='?view=overview&diag_view=logs&log_filter=all&log_source=" + html.escape(source_label) + "'>All</a><a class='chip " + ("active" if filter_label=='smart' else "") + "' href='?view=overview&diag_view=logs&log_filter=smart&log_source=" + html.escape(source_label) + "'>Smart</a><a class='chip " + ("active" if filter_label=='storage' else "") + "' href='?view=overview&diag_view=logs&log_filter=storage&log_source=" + html.escape(source_label) + "'>Storage</a><a class='chip " + ("active" if filter_label=='ping' else "") + "' href='?view=overview&diag_view=logs&log_filter=ping&log_source=" + html.escape(source_label) + "'>Ping</a><a class='chip " + ("active" if filter_label=='port' else "") + "' href='?view=overview&diag_view=logs&log_filter=port&log_source=" + html.escape(source_label) + "'>Port</a><a class='chip " + ("active" if filter_label=='dns' else "") + "' href='?view=overview&diag_view=logs&log_filter=dns&log_source=" + html.escape(source_label) + "'>DNS</a><a class='chip " + ("active" if filter_label=='backup' else "") + "' href='?view=overview&diag_view=logs&log_filter=backup&log_source=" + html.escape(source_label) + "'>Backup</a></div>" if diag_label=='logs' else ""}
         <pre id="log-diag-pre"{' data-agent-fetch="1" data-peer-id="' + html.escape(source_label) + '" data-view="' + html.escape(diag_label) + '" data-log-filter="' + html.escape(filter_label) + '"' if agent_log_async else ""}>{html.escape(log_text)}</pre>

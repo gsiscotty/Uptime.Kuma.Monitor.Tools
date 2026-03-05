@@ -5107,6 +5107,26 @@ def _render_setup_html(
         )
     overview_html = "".join(channel_cards)
 
+    # Current-server section follows selected source context.
+    display_source_name = source_name if source_name else local_source_name
+    display_server_ip = server_ip
+    display_now_text = now_text
+    display_last_login_ip = last_login_ip
+    display_last_login_at_text = last_login_at_text
+    if source_is_remote:
+        remote_snap = _load_peer_snapshot(source_label)
+        peer_cfg = next(
+            (p for p in (cfg.get("peers", []) or []) if str(p.get("instance_id", "") or "").strip() == source_label),
+            None,
+        )
+        peer_url = str(peer_cfg.get("url", "") or "") if isinstance(peer_cfg, dict) else ""
+        peer_host, _peer_port = _parse_peer_host_port(peer_url, PEER_DEFAULT_PORT)
+        display_server_ip = peer_host or "remote"
+        pushed_at = int((remote_snap or {}).get("pushed_at", 0) or 0)
+        display_now_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(pushed_at)) if pushed_at else "n/a"
+        display_last_login_ip = "n/a (remote)"
+        display_last_login_at_text = "n/a (remote)"
+
     # Setup steps with integrated screenshots.
     guide_images = get_task_guide_images()
     step_defs: List[Tuple[str, str, str, str]] = [
@@ -5452,12 +5472,12 @@ def _render_setup_html(
     )
     server_info_card_html = (
         "<div class='server-info-grid'>"
-        f"<button type='button' class='server-info-item server-info-action' data-server-action='name'><span class='muted'>Name</span><strong>{html.escape(local_source_name)}</strong></button>"
-        f"<button type='button' class='server-info-item server-info-action' data-server-action='ip'><span class='muted'>IP</span><strong>{html.escape(server_ip)}</strong></button>"
-        f"<button type='button' class='server-info-item server-info-action' data-server-action='time'><span class='muted'>Time</span><strong>{html.escape(now_text)}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='name'><span class='muted'>Name</span><strong>{html.escape(display_source_name)}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='ip'><span class='muted'>IP</span><strong>{html.escape(display_server_ip)}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='time'><span class='muted'>Time</span><strong>{html.escape(display_now_text)}</strong></button>"
         f"<button type='button' class='server-info-item server-info-action' data-server-action='package'><span class='muted'>Unix Runtime Version</span><strong>{html.escape(VERSION)}</strong></button>"
-        f"<button type='button' class='server-info-item server-info-action' data-server-action='login'><span class='muted'>Last Login Source IP</span><strong>{html.escape(last_login_ip)}</strong></button>"
-        f"<button type='button' class='server-info-item server-info-action' data-server-action='login-time'><span class='muted'>Last Login Time</span><strong>{html.escape(last_login_at_text)}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='login'><span class='muted'>Last Login Source IP</span><strong>{html.escape(display_last_login_ip)}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='login-time'><span class='muted'>Last Login Time</span><strong>{html.escape(display_last_login_at_text)}</strong></button>"
         "</div>"
         "<div class='server-action-panels'>"
         f"<div class='card server-action-panel' data-server-panel='name'><h4>Change server name</h4><form method='post' action='/settings/save-instance-name'><label>Instance Name</label><input name='instance_name' value='{html.escape(str(cfg.get('instance_name', '') or ''))}' placeholder='e.g. HQ-NAS'><div class='button-row'><button type='submit'>Save name</button></div></form></div>"
@@ -5470,7 +5490,7 @@ def _render_setup_html(
     )
     overview_view_html = f"""
       <div class="card">
-        <h3>Current Server <span class="badge muted-badge">{html.escape(local_source_name)}</span></h3>
+        <h3>Current Server <span class="badge muted-badge">{html.escape(display_source_name)}</span></h3>
         <div class="muted" style="margin-bottom:8px;">{html.escape(source_scope_text)}</div>
         {server_info_card_html}
       </div>
