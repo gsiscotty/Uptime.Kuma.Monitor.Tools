@@ -118,6 +118,7 @@ BRAND_COPYRIGHT = "Copyright (c) 2026"
 REPO_URL = "https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools"
 GITHUB_REPO = "gsiscotty/Uptime.Kuma.Monitor.Tools"
 AUTOUPDATE_CHECK_INTERVAL_SEC = 6 * 3600  # Max once per 6 hours
+UPDATE_INFO_REMOTE_PATH = "addons/synology-monitor/community-package/package/INFO"
 PRODUCT_DESC = (
     "Checks Unix host SMART and storage health, provides guided elevated-access setup and diagnostics, "
     "and pushes monitor status to Uptime Kuma."
@@ -1749,26 +1750,84 @@ def _version_tuple(version: str) -> Tuple[int, ...]:
     return tuple(parts[:4])
 
 
-def _run_update_check() -> Dict[str, Any]:
-    """Fetch latest release from GitHub, compare with VERSION. Returns result dict."""
-    result: Dict[str, Any] = {"checked_at": int(time.time()), "error": None, "latest_version": None, "update_available": False}
+def _selected_update_channel(cfg: Optional[Dict[str, Any]] = None) -> str:
+    if cfg is None:
+        cfg = load_config()
+    return "main" if bool(cfg.get("update_from_main", False)) else "latest"
+
+
+def _fetch_latest_release_tag() -> Tuple[Optional[str], Optional[str]]:
     try:
         req = http.client.HTTPSConnection("api.github.com", timeout=10)
-        req.request("GET", f"/repos/{GITHUB_REPO}/releases/latest", headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "unix-monitor"})
+        req.request(
+            "GET",
+            f"/repos/{GITHUB_REPO}/releases/latest",
+            headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "unix-monitor"},
+        )
         resp = req.getresponse()
         data = resp.read().decode("utf-8", errors="ignore")
         req.close()
         if resp.status != 200:
-            result["error"] = f"HTTP {resp.status}"
-            return result
+            return None, f"HTTP {resp.status}"
         obj = json.loads(data)
         tag = str(obj.get("tag_name", "") or "").strip().lstrip("vV")
         if not tag:
-            result["error"] = "No tag_name in response"
+            return None, "No tag_name in response"
+        return tag, None
+    except Exception as e:
+        return None, str(e) if str(e) else type(e).__name__
+
+
+def _fetch_public_version_from_info(ref: str) -> Tuple[Optional[str], Optional[str]]:
+    try:
+        req = http.client.HTTPSConnection("raw.githubusercontent.com", timeout=10)
+        ref_path = quote(ref, safe="")
+        req.request("GET", f"/{GITHUB_REPO}/{ref_path}/{UPDATE_INFO_REMOTE_PATH}", headers={"User-Agent": "unix-monitor"})
+        resp = req.getresponse()
+        data = resp.read().decode("utf-8", errors="ignore")
+        req.close()
+        if resp.status != 200:
+            return None, f"HTTP {resp.status}"
+        m = re.search(r'^version="([^"]+)"', data, flags=re.MULTILINE)
+        if not m:
+            return None, "No version in INFO"
+        return m.group(1).strip(), None
+    except Exception as e:
+        return None, str(e) if str(e) else type(e).__name__
+
+
+def _run_update_check(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Fetch selected channel public version, compare with local VERSION. Returns result dict."""
+    channel = _selected_update_channel(cfg)
+    result: Dict[str, Any] = {
+        "checked_at": int(time.time()),
+        "error": None,
+        "latest_version": None,
+        "public_version": None,
+        "selected_channel": channel,
+        "selected_ref": None,
+        "update_available": False,
+    }
+    try:
+        if channel == "main":
+            ref = "main"
+        else:
+            tag, tag_err = _fetch_latest_release_tag()
+            if tag_err or not tag:
+                result["error"] = tag_err or "Failed to resolve latest release"
+                return result
+            ref = tag
+
+        result["selected_ref"] = ref
+        public_version, version_err = _fetch_public_version_from_info(ref)
+        if version_err or not public_version:
+            result["error"] = version_err or "Failed to resolve public version"
             return result
-        result["latest_version"] = tag
+
+        result["public_version"] = public_version
+        result["latest_version"] = public_version  # Backward compatibility with existing cache consumers
         current = _version_tuple(VERSION)
-        latest = _version_tuple(tag)
+        latest = _version_tuple(public_version)
         result["update_available"] = latest > current
     except Exception as e:
         result["error"] = str(e) if str(e) else type(e).__name__
@@ -1923,7 +1982,7 @@ def _maybe_run_autoupdate(defer_if_user_logged_in: bool = True) -> None:
         if defer_if_user_logged_in:
             if time.time() - last_ts < AUTOUPDATE_CHECK_INTERVAL_SEC:
                 return
-            result = _run_update_check()
+            result = _run_update_check(cfg)
             _save_update_check_result(result)
             if not result.get("update_available"):
                 return
@@ -1931,7 +1990,7 @@ def _maybe_run_autoupdate(defer_if_user_logged_in: bool = True) -> None:
         if (time.time() - last_ts < 3600) and last.get("update_available"):
             result = last
         else:
-            result = _run_update_check()
+            result = _run_update_check(cfg)
             _save_update_check_result(result)
         if not result.get("update_available"):
             return
@@ -5294,17 +5353,32 @@ def _render_setup_html(
         else f"Viewing local source: {source_name}."
     )
     update_curl_cmd = (
-        "curl -sSL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-monitor/install.sh | sudo bash"
+        "curl -sSL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-monitor/install.sh | sudo env UNIX_MONITOR_USE_MAIN=1 bash"
+        if bool(cfg.get("update_from_main", False))
+        else "curl -sSL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-monitor/install.sh | sudo bash"
     )
     has_update_helper = get_update_helper_path().exists()
     has_backup = (get_script_path().parent / "unix-monitor.py.prev").exists()
     autoupdate_enabled = bool(cfg.get("autoupdate_enabled", False))
     update_from_main = bool(cfg.get("update_from_main", False))
+    selected_channel = "main" if update_from_main else "latest"
+    selected_channel_label = "main" if update_from_main else "latest release"
     update_check_result = _load_update_check_result() if not source_is_remote else {}
-    latest_version = str(update_check_result.get("latest_version", "") or "")
+    latest_version = str(update_check_result.get("public_version", "") or update_check_result.get("latest_version", "") or "")
+    cached_channel = str(update_check_result.get("selected_channel", "") or "")
+    channel_matches_cache = (cached_channel == selected_channel) or (not cached_channel and selected_channel == "latest")
     # Only show update available if cache says so AND current VERSION is actually older (stale cache fix after manual update)
-    update_available = bool(update_check_result.get("update_available")) and (
+    update_available = channel_matches_cache and bool(update_check_result.get("update_available")) and (
         latest_version and _version_tuple(VERSION) < _version_tuple(latest_version)
+    )
+    update_status_text = "unknown (use Recheck for updates)"
+    if latest_version:
+        update_status_text = "update available" if update_available else "up to date"
+    update_confirm = (
+        f"Update now from {selected_channel_label} to v{latest_version}? Current local version is v{VERSION}. "
+        "Config and data will be preserved. Page will reload after update."
+        if latest_version
+        else f"Run update from {selected_channel_label}? Config and data will be preserved. Page will reload after update."
     )
     package_update_btns = ""
     if not source_is_remote:
@@ -5314,7 +5388,7 @@ def _render_setup_html(
             update_ready_banner = (
                 "<div class='update-ready-banner'>"
                 "<span>An update is available" + ver_text + ". </span>"
-                "<form method='post' action='/self-update' style='display:inline;' onsubmit='return confirm(\"Update now? Config and data will be preserved. Page will reload after update.\");'>"
+                "<form method='post' action='/self-update' style='display:inline;' onsubmit='return confirm(\"" + html.escape(update_confirm) + "\");'>"
                 "<button type='submit' class='btn-inline'>Update now</button></form>"
                 " <form method='post' action='/settings/request-autoupdate-on-logout' style='display:inline;'>"
                 "<button type='submit' class='btn-inline btn-inline-muted'>Update after logout</button></form>"
@@ -5340,12 +5414,12 @@ def _render_setup_html(
             "<button type='submit' class='" + from_main_enable_class + "'>Update from main</button></form>"
             " <form method='post' action='/settings/save-update-from-main' class='autoupdate-form' style='display:inline;'>"
             "<input type='hidden' name='update_from_main' value='0'>"
-            "<button type='submit' class='" + from_main_disable_class + "'>Update from release</button></form>"
-            "<span class='autoupdate-hint'>Use main branch instead of latest release (for testing).</span></div>"
+            "<button type='submit' class='" + from_main_disable_class + "'>Update from latest</button></form>"
+            "<span class='autoupdate-hint'>Update source controls which public version is checked/applied.</span></div>"
         )
         package_update_btns = autoupdate_form
         if has_update_helper:
-            package_update_btns += "<div class='button-row' style='margin-bottom:8px;'><form method='post' action='/self-update' style='display:inline;' onsubmit='return confirm(\"Update to latest version? Config and data will be preserved. If update fails, previous version is restored.\");'><button type='submit' class='btn-inline'>Update now</button></form>"
+            package_update_btns += "<div class='button-row' style='margin-bottom:8px;'><form method='post' action='/self-update' style='display:inline;' onsubmit='return confirm(\"" + html.escape(update_confirm) + "\");'><button type='submit' class='btn-inline'>Update now</button></form>"
         if has_backup and has_update_helper:
             package_update_btns += " <form method='post' action='/self-rollback' style='display:inline;' onsubmit='return confirm(\"Restore previous version?\");'><button type='submit' class='btn-inline' style='border-color:#ef4444;color:#ef4444;'>Rollback</button></form>"
         if "button-row" in package_update_btns:
@@ -5361,6 +5435,7 @@ def _render_setup_html(
         + "<a class='btn-inline' href='" + html.escape(REPO_URL) + "' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a>"
         + (" <form method='post' action='/settings/recheck-updates' style='display:inline;'><button type='submit' class='btn-inline btn-inline-muted'>Recheck for updates</button></form>" if not source_is_remote else "")
         + "</div>"
+        + "<div class='muted'>Selected source: " + html.escape(selected_channel_label) + " | Local: " + html.escape(VERSION) + " | Public (" + html.escape(selected_channel) + "): " + html.escape(latest_version or "unknown") + " | Status: " + html.escape(update_status_text) + "</div>"
         + "<pre>" + html.escape(update_curl_cmd) + "</pre>"
         + "<div class='muted'>Update: backs up, downloads latest, validates, replaces. On failure restores previous. Config and data preserved.</div>"
         + "<div class='muted'>" + html.escape(source_scope_text) + "</div></div>"
@@ -8585,9 +8660,13 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     cfg = load_config()
                     cfg["update_from_main"] = enabled
                     save_config(cfg, reapply_cron=False)
-                    append_ui_log(f"settings | update from main {'enabled' if enabled else 'disabled'}")
+                    check_result = _run_update_check(cfg)
+                    _save_update_check_result(check_result)
+                    selected = "main" if enabled else "latest release"
+                    public_version = str(check_result.get("public_version", "") or check_result.get("latest_version", "") or "")
+                    append_ui_log(f"settings | update source set to {selected}")
                     self._reply_html(_render_setup_html(
-                        security_message="Update from main " + ("enabled" if enabled else "disabled") + ".",
+                        security_message="Update source set to " + selected + (f". Public version: {public_version}." if public_version else "."),
                         ui_view=ui_view,
                         ssl_warning=ssl_warning,
                         open_server_panel="package",
@@ -8625,12 +8704,27 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     self._reply_json({"status": "started", "session_id": session_id, "peer_id": peer_id}, 202)
                     return
                 if self.path == "/settings/recheck-updates":
-                    try:
-                        _get_update_check_path().unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                    append_ui_log("settings | update cache cleared, recheck on next load")
-                    self._redirect("/?view=overview")
+                    cfg = load_config()
+                    result = _run_update_check(cfg)
+                    _save_update_check_result(result)
+                    selected_channel = str(result.get("selected_channel", "") or "latest")
+                    public_version = str(result.get("public_version", "") or result.get("latest_version", "") or "")
+                    if result.get("error"):
+                        append_ui_log(f"settings | recheck updates failed ({selected_channel}): {result.get('error')}")
+                        self._reply_html(_render_setup_html(
+                            error=f"Recheck failed ({selected_channel}): {result.get('error')}",
+                            ui_view="overview",
+                            ssl_warning=ssl_warning,
+                            open_server_panel="package",
+                        ))
+                        return
+                    append_ui_log(f"settings | recheck updates ok ({selected_channel}) public={public_version or '?'} local={VERSION}")
+                    self._reply_html(_render_setup_html(
+                        security_message=f"Rechecked updates ({selected_channel}). Local: {VERSION}. Public: {public_version or 'unknown'}.",
+                        ui_view="overview",
+                        ssl_warning=ssl_warning,
+                        open_server_panel="package",
+                    ))
                     return
                 if self.path == "/settings/request-autoupdate-on-logout":
                     flag_path = _get_autoupdate_on_logout_flag_path()
@@ -8701,8 +8795,8 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                             return
                         append_ui_log("self-update | completed successfully")
                         try:
-                            _get_update_check_path().unlink(missing_ok=True)
-                        except OSError:
+                            _save_update_check_result(_run_update_check(load_config()))
+                        except Exception:
                             pass
                         self._reply_html(_render_setup_html(
                             security_message="Update complete. Config and data preserved. Restarting services…",

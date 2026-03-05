@@ -31,6 +31,7 @@ fi
 
 REPO="gsiscotty/Uptime.Kuma.Monitor.Tools"
 SCRIPT_NAME="unix-monitor.py"
+INFO_REMOTE_PATH="addons/synology-monitor/community-package/package/INFO"
 
 # Resolve download ref: use latest release tag so updates match what the UI checks against.
 # Set UNIX_MONITOR_USE_MAIN=1 to force main branch (e.g. for testing unreleased changes).
@@ -44,6 +45,64 @@ fi
 
 URL="https://raw.githubusercontent.com/${REPO}/${REF}/addons/unix-monitor/${SCRIPT_NAME}"
 NEW="${SCRIPT}.new"
+
+fetch_public_version_for_ref() {
+    local ref="$1"
+    local url="https://raw.githubusercontent.com/${REPO}/${ref}/${INFO_REMOTE_PATH}"
+    local content=""
+    if command -v curl >/dev/null 2>&1; then
+        content="$(curl -fsSL "${url}" 2>/dev/null || true)"
+    elif command -v wget >/dev/null 2>&1; then
+        content="$(wget -qO- "${url}" 2>/dev/null || true)"
+    fi
+    printf '%s\n' "${content}" | sed -n 's/^version="\([^"]*\)".*/\1/p' | head -n 1
+}
+
+detect_local_version() {
+    sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' "${SCRIPT}" | head -n 1
+}
+
+version_cmp() {
+    local a="${1:-0}"
+    local b="${2:-0}"
+    python3 - "${a}" "${b}" <<'PY'
+import re, sys
+def to_parts(v):
+    nums = [int(x) for x in re.findall(r"\d+", v or "")]
+    return nums or [0]
+a = to_parts(sys.argv[1])
+b = to_parts(sys.argv[2])
+n = max(len(a), len(b))
+a += [0] * (n - len(a))
+b += [0] * (n - len(b))
+print(-1 if a < b else (1 if a > b else 0))
+PY
+}
+
+CHANNEL="latest"
+if [ "${REF}" = "main" ]; then
+    CHANNEL="main"
+fi
+LOCAL_VERSION="$(detect_local_version || true)"
+PUBLIC_VERSION="$(fetch_public_version_for_ref "${REF}" || true)"
+echo "Update source: ${CHANNEL} (${REF})"
+echo "Local version: ${LOCAL_VERSION:-unknown}"
+echo "Public (${CHANNEL}) version: ${PUBLIC_VERSION:-unknown}"
+if [ -n "${LOCAL_VERSION}" ] && [ -n "${PUBLIC_VERSION}" ]; then
+    CMP_RESULT="$(version_cmp "${LOCAL_VERSION}" "${PUBLIC_VERSION}")"
+    if [ "${CMP_RESULT}" -ge 0 ] && [ "${UNIX_MONITOR_FORCE_UPDATE:-0}" != "1" ]; then
+        echo "No update needed (local is up to date). Set UNIX_MONITOR_FORCE_UPDATE=1 to force."
+        exit 0
+    fi
+fi
+if [ -t 0 ] && [ "${UNIX_MONITOR_ASSUME_YES:-0}" != "1" ]; then
+    printf "Proceed with update from %s? (y/N): " "${CHANNEL}"
+    read -r CONFIRM
+    if [[ ! "${CONFIRM:-N}" =~ ^[Yy]$ ]]; then
+        echo "Cancelled."
+        exit 0
+    fi
+fi
 
 # 1) Backup current
 if [ ! -f "${SCRIPT}" ]; then

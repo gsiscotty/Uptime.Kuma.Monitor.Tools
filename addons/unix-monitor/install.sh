@@ -4,13 +4,14 @@ set -euo pipefail
 
 REPO="gsiscotty/Uptime.Kuma.Monitor.Tools"
 BRANCH="main"
-# Use latest release tag when available so install/update matches what the UI checks.
-# Set UNIX_MONITOR_USE_MAIN=1 to force main branch (e.g. for testing unreleased changes).
-REF="${BRANCH}"
-if [ "${UNIX_MONITOR_USE_MAIN:-0}" != "1" ] && command -v curl >/dev/null 2>&1; then
-    TAG=$(curl -sfL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep -o '"tag_name":[[:space:]]*"[^"]*"' | sed 's/"tag_name":[[:space:]]*"\([^"]*\)"/\1/')
-    [ -n "${TAG}" ] && REF="${TAG}"
+UPDATE_CHANNEL="${UNIX_MONITOR_UPDATE_CHANNEL:-}"
+if [ "${UNIX_MONITOR_USE_MAIN:-0}" = "1" ]; then
+    UPDATE_CHANNEL="main"
 fi
+if [ "${UPDATE_CHANNEL}" != "main" ] && [ "${UPDATE_CHANNEL}" != "latest" ]; then
+    UPDATE_CHANNEL="latest"
+fi
+REF="${BRANCH}"
 
 SCRIPT_NAME="unix-monitor.py"
 SCRIPT_REMOTE_PATH="addons/unix-monitor/${SCRIPT_NAME}"
@@ -21,6 +22,7 @@ UNINSTALL_RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${UNINSTALL_
 UPDATE_HELPER_NAME="update-helper.sh"
 UPDATE_HELPER_REMOTE_PATH="addons/unix-monitor/${UPDATE_HELPER_NAME}"
 UPDATE_HELPER_RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${UPDATE_HELPER_REMOTE_PATH}"
+INFO_REMOTE_PATH="addons/synology-monitor/community-package/package/INFO"
 DEFAULT_INSTALL_DIR="/opt/unix-monitor"
 MIN_PYTHON_MAJOR=3
 MIN_PYTHON_MINOR=8
@@ -258,6 +260,64 @@ normalize_interval() {
     echo "${raw}"
 }
 
+resolve_ref_from_channel() {
+    REF="${BRANCH}"
+    if [ "${UPDATE_CHANNEL}" = "main" ]; then
+        return 0
+    fi
+    local tag=""
+    if command -v curl >/dev/null 2>&1; then
+        tag=$(curl -sfL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep -o '"tag_name":[[:space:]]*"[^"]*"' | sed 's/"tag_name":[[:space:]]*"\([^"]*\)"/\1/' | head -n 1)
+    elif command -v wget >/dev/null 2>&1; then
+        tag=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep -o '"tag_name":[[:space:]]*"[^"]*"' | sed 's/"tag_name":[[:space:]]*"\([^"]*\)"/\1/' | head -n 1)
+    fi
+    [ -n "${tag}" ] && REF="${tag}"
+}
+
+refresh_download_urls() {
+    SCRIPT_RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${SCRIPT_REMOTE_PATH}"
+    UNINSTALL_RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${UNINSTALL_REMOTE_PATH}"
+    UPDATE_HELPER_RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${UPDATE_HELPER_REMOTE_PATH}"
+}
+
+detect_local_version() {
+    local script_path="$1"
+    if [ ! -f "${script_path}" ]; then
+        echo ""
+        return 0
+    fi
+    sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' "${script_path}" | head -n 1
+}
+
+fetch_public_version_for_ref() {
+    local ref="$1"
+    local url="https://raw.githubusercontent.com/${REPO}/${ref}/${INFO_REMOTE_PATH}"
+    local content=""
+    if command -v curl >/dev/null 2>&1; then
+        content="$(curl -fsSL "${url}" 2>/dev/null || true)"
+    elif command -v wget >/dev/null 2>&1; then
+        content="$(wget -qO- "${url}" 2>/dev/null || true)"
+    fi
+    printf '%s\n' "${content}" | sed -n 's/^version="\([^"]*\)".*/\1/p' | head -n 1
+}
+
+version_cmp() {
+    local a="${1:-0}"
+    local b="${2:-0}"
+    python3 - "${a}" "${b}" <<'PY'
+import re, sys
+def to_parts(v):
+    nums = [int(x) for x in re.findall(r"\d+", v or "")]
+    return nums or [0]
+a = to_parts(sys.argv[1])
+b = to_parts(sys.argv[2])
+n = max(len(a), len(b))
+a += [0] * (n - len(a))
+b += [0] * (n - len(b))
+print(-1 if a < b else (1 if a > b else 0))
+PY
+}
+
 echo ""
 echo -e "${BOLD}${APP_LABEL} — Installer${NC}"
 echo "mount + unix storage checks + peer master/agent mode"
@@ -336,6 +396,47 @@ if [ -f "${INSTALL_DIR}/${SCRIPT_NAME}" ] || [ -f "${INSTALL_DIR}/unix-monitor.j
     EXISTING_INSTALL=1
 fi
 
+if [ -z "${MIGRATE_FROM_LEGACY:-}" ] && [ -t 0 ] && [ -z "${UNIX_MONITOR_UPDATE_CHANNEL:-}" ] && [ "${UNIX_MONITOR_USE_MAIN:-0}" != "1" ]; then
+    echo ""
+    echo "Update source:"
+    echo "  1) latest release (default)"
+    echo "  2) main branch (testing)"
+    echo -e "Choose source [1]: \c"
+    read_input UPDATE_CHANNEL_CHOICE || true
+    UPDATE_CHANNEL_CHOICE="${UPDATE_CHANNEL_CHOICE:-1}"
+    if [ "${UPDATE_CHANNEL_CHOICE}" = "2" ]; then
+        UPDATE_CHANNEL="main"
+    else
+        UPDATE_CHANNEL="latest"
+    fi
+fi
+resolve_ref_from_channel
+refresh_download_urls
+
+LOCAL_VERSION="$(detect_local_version "${INSTALL_DIR}/${SCRIPT_NAME}")"
+PUBLIC_VERSION="$(fetch_public_version_for_ref "${REF}")"
+echo ""
+info "Selected update source: ${UPDATE_CHANNEL} (ref: ${REF})"
+info "Local version: ${LOCAL_VERSION:-unknown}"
+info "Public (${UPDATE_CHANNEL}) version: ${PUBLIC_VERSION:-unknown}"
+if [ -n "${LOCAL_VERSION}" ] && [ -n "${PUBLIC_VERSION}" ]; then
+    CMP_RESULT="$(version_cmp "${LOCAL_VERSION}" "${PUBLIC_VERSION}")"
+    if [ "${CMP_RESULT}" -ge 0 ]; then
+        info "Version check: local is up to date (or newer)."
+    else
+        warn "Version check: update available."
+    fi
+fi
+
+if [ "${EXISTING_INSTALL}" -eq 1 ] && [ -z "${MIGRATE_FROM_LEGACY:-}" ]; then
+    echo -e "Proceed with update/install from ${UPDATE_CHANNEL}? (Y/n): \c"
+    read_input CONFIRM_UPDATE || true
+    if [[ "${CONFIRM_UPDATE:-Y}" =~ ^[Nn]$ ]]; then
+        err "Cancelled."
+        exit 1
+    fi
+fi
+
 if [ "${EXISTING_INSTALL}" -eq 1 ]; then
     echo ""
     warn "Existing unix-monitor installation detected."
@@ -409,9 +510,7 @@ if ! do_downloads; then
     if [ "${REF}" != "${BRANCH}" ]; then
         warn "Release ${REF} missing unix-monitor addon, falling back to main branch."
         REF="${BRANCH}"
-        SCRIPT_RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${SCRIPT_REMOTE_PATH}"
-        UNINSTALL_RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${UNINSTALL_REMOTE_PATH}"
-        UPDATE_HELPER_RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${UPDATE_HELPER_REMOTE_PATH}"
+        refresh_download_urls
         do_downloads
     else
         err "Download failed."
