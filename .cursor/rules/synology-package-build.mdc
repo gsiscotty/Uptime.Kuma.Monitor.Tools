@@ -1,0 +1,15 @@
+---
+description: After synology-monitor changes, always rebuild the SPK package
+globs: addons/synology-monitor/**/*
+alwaysApply: false
+---
+
+# Synology Monitor Package Build
+
+After making changes to synology-monitor (including synology-monitor.py, package files, etc.), **always run the package build** so the SPK is up to date:
+
+```bash
+cd addons/synology-monitor/community-package && ./build-spk.sh
+```
+
+Output: `addons/synology-monitor/community-package/dist/synology-monitor-basic.spk`

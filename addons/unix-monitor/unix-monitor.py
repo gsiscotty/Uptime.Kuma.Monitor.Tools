@@ -7681,18 +7681,23 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 self._reply_peer_json({"status": "ok", "created": m_name}, 201)
                 return
             if self.path == "/api/peer/update":
-                if not self._require_peer_mtls(allow_token_only=True):
-                    return
-                if not self._verify_peer_token():
-                    self._reply_json({"error": "unauthorized"}, 401)
-                    return
-                helper = get_update_helper_path()
-                if not helper.exists():
-                    self._reply_peer_json({"error": "Update helper not found"}, 400)
-                    return
-                session_id = _run_agent_update_background()
-                append_ui_log("peer-update | update started by master")
-                self._reply_peer_json({"status": "started", "session_id": session_id}, 202)
+                try:
+                    if not self._require_peer_mtls(allow_token_only=True):
+                        return
+                    if not self._verify_peer_token():
+                        self._reply_json({"error": "unauthorized"}, 401)
+                        return
+                    helper = get_update_helper_path()
+                    if not helper.exists():
+                        self._reply_peer_json({"error": "Update helper not found"}, 400)
+                        return
+                    session_id = _run_agent_update_background()
+                    append_ui_log("peer-update | update started by master")
+                    self._reply_peer_json({"status": "started", "session_id": session_id}, 202)
+                except Exception as e:
+                    err_msg = f"{type(e).__name__}: {e}"
+                    append_ui_log(f"peer-update | error: {err_msg}")
+                    self._reply_peer_json({"error": err_msg}, 500)
                 return
             if self.path == "/peer/test-connection":
                 if not self._is_authenticated():

@@ -1,0 +1,13 @@
+---
+description: When adding features across addons, ask about syncing after compatibility check
+globs: addons/**/*.py
+alwaysApply: false
+---
+
+# Addon Feature Sync (unix-monitor ↔ synology-monitor)
+
+When adding or modifying features in **one** addon (unix-monitor or synology-monitor):
+
+1. **Check compatibility** – Verify the feature can work in both contexts (Synology DSM/SPK vs generic Unix).
+2. **After compatibility is confirmed** – Ask the user: *"Should this feature be added to the other addon as well?"*
+3. Do not blindly port – Some features differ by design (e.g., Synology has no script-based self-update; use Package Center).
