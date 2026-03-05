@@ -118,7 +118,7 @@ BRAND_COPYRIGHT = "Copyright (c) 2026"
 REPO_URL = "https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools"
 GITHUB_REPO = "gsiscotty/Uptime.Kuma.Monitor.Tools"
 AUTOUPDATE_CHECK_INTERVAL_SEC = 6 * 3600  # Max once per 6 hours
-UPDATE_INFO_REMOTE_PATH = "addons/synology-monitor/community-package/package/INFO"
+UPDATE_SCRIPT_REMOTE_PATH = "addons/unix-monitor/unix-monitor.py"
 PRODUCT_DESC = (
     "Checks Unix host SMART and storage health, provides guided elevated-access setup and diagnostics, "
     "and pushes monitor status to Uptime Kuma."
@@ -1778,19 +1778,19 @@ def _fetch_latest_release_tag() -> Tuple[Optional[str], Optional[str]]:
         return None, str(e) if str(e) else type(e).__name__
 
 
-def _fetch_public_version_from_info(ref: str) -> Tuple[Optional[str], Optional[str]]:
+def _fetch_public_version_from_script(ref: str) -> Tuple[Optional[str], Optional[str]]:
     try:
         req = http.client.HTTPSConnection("raw.githubusercontent.com", timeout=10)
         ref_path = quote(ref, safe="")
-        req.request("GET", f"/{GITHUB_REPO}/{ref_path}/{UPDATE_INFO_REMOTE_PATH}", headers={"User-Agent": "unix-monitor"})
+        req.request("GET", f"/{GITHUB_REPO}/{ref_path}/{UPDATE_SCRIPT_REMOTE_PATH}", headers={"User-Agent": "unix-monitor"})
         resp = req.getresponse()
         data = resp.read().decode("utf-8", errors="ignore")
         req.close()
         if resp.status != 200:
             return None, f"HTTP {resp.status}"
-        m = re.search(r'^version="([^"]+)"', data, flags=re.MULTILINE)
+        m = re.search(r'^VERSION\s*=\s*"([^"]+)"', data, flags=re.MULTILINE)
         if not m:
-            return None, "No version in INFO"
+            return None, "No VERSION in script"
         return m.group(1).strip(), None
     except Exception as e:
         return None, str(e) if str(e) else type(e).__name__
@@ -1806,6 +1806,7 @@ def _run_update_check(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "public_version": None,
         "selected_channel": channel,
         "selected_ref": None,
+        "effective_ref": None,
         "update_available": False,
     }
     try:
@@ -1819,13 +1820,20 @@ def _run_update_check(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             ref = tag
 
         result["selected_ref"] = ref
-        public_version, version_err = _fetch_public_version_from_info(ref)
+        effective_ref = ref
+        public_version, version_err = _fetch_public_version_from_script(ref)
+        if (version_err or not public_version) and ref != "main":
+            # Match update-helper behavior: release tags may not include unix-monitor; fall back to main.
+            public_version, version_err = _fetch_public_version_from_script("main")
+            if not version_err and public_version:
+                effective_ref = "main"
         if version_err or not public_version:
-            result["error"] = version_err or "Failed to resolve public version"
+            result["error"] = version_err or "Failed to resolve public script version"
             return result
 
         result["public_version"] = public_version
         result["latest_version"] = public_version  # Backward compatibility with existing cache consumers
+        result["effective_ref"] = effective_ref
         current = _version_tuple(VERSION)
         latest = _version_tuple(public_version)
         result["update_available"] = latest > current
@@ -5366,6 +5374,8 @@ def _render_setup_html(
     update_check_result = _load_update_check_result() if not source_is_remote else {}
     latest_version = str(update_check_result.get("public_version", "") or update_check_result.get("latest_version", "") or "")
     cached_channel = str(update_check_result.get("selected_channel", "") or "")
+    effective_ref = str(update_check_result.get("effective_ref", "") or update_check_result.get("selected_ref", "") or selected_channel)
+    public_label = f"{selected_channel} via {effective_ref}" if effective_ref and effective_ref != selected_channel else selected_channel
     channel_matches_cache = (cached_channel == selected_channel) or (not cached_channel and selected_channel == "latest")
     # Only show update available if cache says so AND current VERSION is actually older (stale cache fix after manual update)
     update_available = channel_matches_cache and bool(update_check_result.get("update_available")) and (
@@ -5435,7 +5445,7 @@ def _render_setup_html(
         + "<a class='btn-inline' href='" + html.escape(REPO_URL) + "' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a>"
         + (" <form method='post' action='/settings/recheck-updates' style='display:inline;'><button type='submit' class='btn-inline btn-inline-muted'>Recheck for updates</button></form>" if not source_is_remote else "")
         + "</div>"
-        + "<div class='muted'>Selected source: " + html.escape(selected_channel_label) + " | Local: " + html.escape(VERSION) + " | Public (" + html.escape(selected_channel) + "): " + html.escape(latest_version or "unknown") + " | Status: " + html.escape(update_status_text) + "</div>"
+        + "<div class='muted'>Selected source: " + html.escape(selected_channel_label) + " | Local: " + html.escape(VERSION) + " | Public (" + html.escape(public_label) + "): " + html.escape(latest_version or "unknown") + " | Status: " + html.escape(update_status_text) + "</div>"
         + "<pre>" + html.escape(update_curl_cmd) + "</pre>"
         + "<div class='muted'>Update: backs up, downloads latest, validates, replaces. On failure restores previous. Config and data preserved.</div>"
         + "<div class='muted'>" + html.escape(source_scope_text) + "</div></div>"

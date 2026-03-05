@@ -22,7 +22,7 @@ UNINSTALL_RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${UNINSTALL_
 UPDATE_HELPER_NAME="update-helper.sh"
 UPDATE_HELPER_REMOTE_PATH="addons/unix-monitor/${UPDATE_HELPER_NAME}"
 UPDATE_HELPER_RAW_URL="https://raw.githubusercontent.com/${REPO}/${REF}/${UPDATE_HELPER_REMOTE_PATH}"
-INFO_REMOTE_PATH="addons/synology-monitor/community-package/package/INFO"
+SCRIPT_VERSION_REMOTE_PATH="addons/unix-monitor/unix-monitor.py"
 DEFAULT_INSTALL_DIR="/opt/unix-monitor"
 MIN_PYTHON_MAJOR=3
 MIN_PYTHON_MINOR=8
@@ -291,14 +291,14 @@ detect_local_version() {
 
 fetch_public_version_for_ref() {
     local ref="$1"
-    local url="https://raw.githubusercontent.com/${REPO}/${ref}/${INFO_REMOTE_PATH}"
+    local url="https://raw.githubusercontent.com/${REPO}/${ref}/${SCRIPT_VERSION_REMOTE_PATH}"
     local content=""
     if command -v curl >/dev/null 2>&1; then
         content="$(curl -fsSL "${url}" 2>/dev/null || true)"
     elif command -v wget >/dev/null 2>&1; then
         content="$(wget -qO- "${url}" 2>/dev/null || true)"
     fi
-    printf '%s\n' "${content}" | sed -n 's/^version="\([^"]*\)".*/\1/p' | head -n 1
+    printf '%s\n' "${content}" | sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' | head -n 1
 }
 
 version_cmp() {
@@ -425,6 +425,10 @@ refresh_download_urls
 
 LOCAL_VERSION="$(detect_local_version "${INSTALL_DIR}/${SCRIPT_NAME}")"
 PUBLIC_VERSION="$(fetch_public_version_for_ref "${REF}")"
+if [ -z "${PUBLIC_VERSION}" ] && [ "${REF}" != "main" ]; then
+    warn "Selected ref ${REF} does not contain unix-monitor script version; falling back to main for version check."
+    PUBLIC_VERSION="$(fetch_public_version_for_ref "main")"
+fi
 echo ""
 info "Selected update source: ${UPDATE_CHANNEL} (ref: ${REF})"
 info "Local version: ${LOCAL_VERSION:-unknown}"

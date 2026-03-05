@@ -31,7 +31,7 @@ fi
 
 REPO="gsiscotty/Uptime.Kuma.Monitor.Tools"
 SCRIPT_NAME="unix-monitor.py"
-INFO_REMOTE_PATH="addons/synology-monitor/community-package/package/INFO"
+SCRIPT_VERSION_REMOTE_PATH="addons/unix-monitor/unix-monitor.py"
 
 # Resolve download ref: use latest release tag so updates match what the UI checks against.
 # Set UNIX_MONITOR_USE_MAIN=1 to force main branch (e.g. for testing unreleased changes).
@@ -48,14 +48,14 @@ NEW="${SCRIPT}.new"
 
 fetch_public_version_for_ref() {
     local ref="$1"
-    local url="https://raw.githubusercontent.com/${REPO}/${ref}/${INFO_REMOTE_PATH}"
+    local url="https://raw.githubusercontent.com/${REPO}/${ref}/${SCRIPT_VERSION_REMOTE_PATH}"
     local content=""
     if command -v curl >/dev/null 2>&1; then
         content="$(curl -fsSL "${url}" 2>/dev/null || true)"
     elif command -v wget >/dev/null 2>&1; then
         content="$(wget -qO- "${url}" 2>/dev/null || true)"
     fi
-    printf '%s\n' "${content}" | sed -n 's/^version="\([^"]*\)".*/\1/p' | head -n 1
+    printf '%s\n' "${content}" | sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' | head -n 1
 }
 
 detect_local_version() {
@@ -85,6 +85,10 @@ if [ "${REF}" = "main" ]; then
 fi
 LOCAL_VERSION="$(detect_local_version || true)"
 PUBLIC_VERSION="$(fetch_public_version_for_ref "${REF}" || true)"
+if [ -z "${PUBLIC_VERSION}" ] && [ "${REF}" != "main" ]; then
+    echo "Selected ref ${REF} does not contain unix-monitor script version; using main for comparison."
+    PUBLIC_VERSION="$(fetch_public_version_for_ref "main" || true)"
+fi
 echo "Update source: ${CHANNEL} (${REF})"
 echo "Local version: ${LOCAL_VERSION:-unknown}"
 echo "Public (${CHANNEL}) version: ${PUBLIC_VERSION:-unknown}"
