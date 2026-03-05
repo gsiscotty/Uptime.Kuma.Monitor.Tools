@@ -1447,6 +1447,9 @@ def _trigger_agent_update(cfg: Dict[str, Any], peer_id: str) -> Tuple[Optional[s
         try:
             err = json.loads(body)
             msg = str(err.get("error", body))[:500]
+            tb = err.get("traceback", "")
+            if tb:
+                return None, f"HTTP {status}: {msg}\n\nTraceback:\n{tb[:1500]}"
             return None, f"HTTP {status}: {msg}"
         except (json.JSONDecodeError, ValueError):
             return None, f"HTTP {status}: {body[:500]}"

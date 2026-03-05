@@ -39,6 +39,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import platform
 import warnings
 from io import BytesIO
@@ -1444,7 +1445,11 @@ def _trigger_agent_update(cfg: Dict[str, Any], peer_id: str) -> Tuple[Optional[s
                 return None, f"Invalid response: {body[:200]}"
         try:
             err = json.loads(body)
-            return None, str(err.get("error", body))[:500]
+            msg = str(err.get("error", body))[:500]
+            tb = err.get("traceback", "")
+            if tb:
+                return None, f"HTTP {status}: {msg}\n\nTraceback:\n{tb[:1500]}"
+            return None, f"HTTP {status}: {msg}"
         except (json.JSONDecodeError, ValueError):
             return None, f"HTTP {status}: {body[:500]}"
     except Exception as e:
@@ -1822,24 +1827,34 @@ def _run_agent_update_background() -> str:
     session_id = secrets.token_hex(8)
     helper = get_update_helper_path()
     script_dir = str(get_script_path().parent)
+    append_ui_log(f"peer-update | session {session_id} helper={helper} script_dir={script_dir}")
     if not helper.exists():
+        append_ui_log(f"peer-update | helper missing at {helper}")
+        try:
+            _save_agent_update_session({
+                "session_id": session_id,
+                "stage": "failed",
+                "log": [],
+                "error": "Update helper not found",
+                "started_at": int(time.time()),
+                "updated_at": int(time.time()),
+            })
+        except Exception as e:
+            append_ui_log(f"peer-update | save session failed: {type(e).__name__}: {e}")
+            raise
+        return session_id
+    try:
         _save_agent_update_session({
             "session_id": session_id,
-            "stage": "failed",
+            "stage": "running",
             "log": [],
-            "error": "Update helper not found",
+            "error": None,
             "started_at": int(time.time()),
             "updated_at": int(time.time()),
         })
-        return session_id
-    _save_agent_update_session({
-        "session_id": session_id,
-        "stage": "running",
-        "log": [],
-        "error": None,
-        "started_at": int(time.time()),
-        "updated_at": int(time.time()),
-    })
+    except Exception as e:
+        append_ui_log(f"peer-update | save session failed: {type(e).__name__}: {e}")
+        raise
 
     def _do_update() -> None:
         log_lines: List[str] = []
@@ -7681,23 +7696,33 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 self._reply_peer_json({"status": "ok", "created": m_name}, 201)
                 return
             if self.path == "/api/peer/update":
+                append_ui_log("peer-update | request received from master")
                 try:
+                    append_ui_log("peer-update | checking mTLS")
                     if not self._require_peer_mtls(allow_token_only=True):
+                        append_ui_log("peer-update | mTLS check failed")
                         return
+                    append_ui_log("peer-update | checking token")
                     if not self._verify_peer_token():
+                        append_ui_log("peer-update | token verification failed")
                         self._reply_json({"error": "unauthorized"}, 401)
                         return
                     helper = get_update_helper_path()
+                    append_ui_log(f"peer-update | helper path: {helper} exists={helper.exists()}")
                     if not helper.exists():
+                        append_ui_log("peer-update | update helper not found")
                         self._reply_peer_json({"error": "Update helper not found"}, 400)
                         return
+                    append_ui_log("peer-update | starting background update")
                     session_id = _run_agent_update_background()
-                    append_ui_log("peer-update | update started by master")
+                    append_ui_log(f"peer-update | started session {session_id}")
                     self._reply_peer_json({"status": "started", "session_id": session_id}, 202)
                 except Exception as e:
+                    tb = traceback.format_exc()
                     err_msg = f"{type(e).__name__}: {e}"
                     append_ui_log(f"peer-update | error: {err_msg}")
-                    self._reply_peer_json({"error": err_msg}, 500)
+                    append_ui_log(f"peer-update | traceback: {tb}")
+                    self._reply_peer_json({"error": err_msg, "traceback": tb[:2000]}, 500)
                 return
             if self.path == "/peer/test-connection":
                 if not self._is_authenticated():
