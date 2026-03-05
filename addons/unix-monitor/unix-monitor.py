@@ -5360,10 +5360,10 @@ def _render_setup_html(
         if source_is_remote
         else f"Viewing local source: {source_name}."
     )
+    update_channel = "main" if bool(cfg.get("update_from_main", False)) else "latest"
     update_curl_cmd = (
-        "curl -sSL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-monitor/install.sh | sudo env UNIX_MONITOR_USE_MAIN=1 bash"
-        if bool(cfg.get("update_from_main", False))
-        else "curl -sSL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-monitor/install.sh | sudo bash"
+        "curl -sSL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-monitor/install.sh"
+        f" | sudo env UNIX_MONITOR_UPDATE_CHANNEL={update_channel} bash"
     )
     has_update_helper = get_update_helper_path().exists()
     has_backup = (get_script_path().parent / "unix-monitor.py.prev").exists()
