@@ -1720,6 +1720,15 @@ def get_update_helper_path() -> Path:
     return get_script_path().parent / "update-helper.sh"
 
 
+def _update_helper_env(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    """Env for update-helper: UNIX_MONITOR_USE_MAIN=1 when update_from_main is enabled."""
+    if cfg is None:
+        cfg = load_config()
+    if cfg.get("update_from_main"):
+        return {"UNIX_MONITOR_USE_MAIN": "1"}
+    return {}
+
+
 def _get_update_check_path() -> Path:
     return get_runtime_data_dir() / "unix-update-check.json"
 
@@ -1859,11 +1868,14 @@ def _run_agent_update_background() -> str:
     def _do_update() -> None:
         log_lines: List[str] = []
         try:
+            cfg = load_config()
+            proc_env = {**os.environ, **_update_helper_env(cfg)}
             proc = subprocess.Popen(
                 [str(helper), script_dir, "update", "no-restart"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                env=proc_env,
             )
             assert proc.stdout
             for line in iter(proc.stdout.readline, ""):
@@ -1927,7 +1939,7 @@ def _maybe_run_autoupdate(defer_if_user_logged_in: bool = True) -> None:
         if not helper.exists():
             return
         script_dir = str(get_script_path().parent)
-        rc, out = _run_cmd([str(helper), script_dir, "update", "no-restart"], timeout_sec=30)
+        rc, out = _run_cmd([str(helper), script_dir, "update", "no-restart"], timeout_sec=30, env=_update_helper_env(cfg))
         if rc != 0:
             append_ui_log(f"autoupdate | failed: {out.strip() or rc}")
             return
@@ -3024,9 +3036,12 @@ def apply_cron_schedule(cfg: Dict[str, Any]) -> bool:
     return add_cron_entry(int(cfg.get("cron_interval_minutes", 60)))
 
 
-def _run_cmd(cmd: List[str], timeout_sec: int = 20) -> Tuple[int, str]:
+def _run_cmd(cmd: List[str], timeout_sec: int = 20, env: Optional[Dict[str, str]] = None) -> Tuple[int, str]:
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec, check=False)
+        kwargs: Dict[str, Any] = dict(capture_output=True, text=True, timeout=timeout_sec, check=False)
+        if env is not None:
+            kwargs["env"] = {**os.environ, **env}
+        p = subprocess.run(cmd, **kwargs)
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except FileNotFoundError:
         return 127, f"Command not found: {cmd[0]}"
@@ -4449,6 +4464,16 @@ def toggle_debug() -> None:
     print(f"\n  Debug mode: {'ON' if cfg['debug'] else 'OFF'}")
 
 
+def toggle_update_from_main() -> None:
+    """Toggle update_from_main: when ON, updates fetch from main branch instead of latest release."""
+    cfg = load_config()
+    cfg["update_from_main"] = not cfg.get("update_from_main", False)
+    save_config(cfg, reapply_cron=False)
+    on_off = "ON" if cfg["update_from_main"] else "OFF"
+    print(f"\n  Update from main (testing): {on_off}")
+    print("  Future updates will use " + ("main branch" if cfg["update_from_main"] else "latest release") + ".")
+
+
 def _render_peering_card(cfg: Dict[str, Any], peering_message: str = "") -> str:
     instance_id = _get_instance_id(cfg)
     instance_name = str(cfg.get("instance_name", "") or "")
@@ -5274,6 +5299,7 @@ def _render_setup_html(
     has_update_helper = get_update_helper_path().exists()
     has_backup = (get_script_path().parent / "unix-monitor.py.prev").exists()
     autoupdate_enabled = bool(cfg.get("autoupdate_enabled", False))
+    update_from_main = bool(cfg.get("update_from_main", False))
     update_check_result = _load_update_check_result() if not source_is_remote else {}
     latest_version = str(update_check_result.get("latest_version", "") or "")
     # Only show update available if cache says so AND current VERSION is actually older (stale cache fix after manual update)
@@ -5296,6 +5322,8 @@ def _render_setup_html(
             )
         enable_btn_class = "autoupdate-btn autoupdate-btn-active" if autoupdate_enabled else "autoupdate-btn"
         disable_btn_class = "autoupdate-btn autoupdate-btn-active" if not autoupdate_enabled else "autoupdate-btn"
+        from_main_enable_class = "autoupdate-btn autoupdate-btn-active" if update_from_main else "autoupdate-btn"
+        from_main_disable_class = "autoupdate-btn autoupdate-btn-active" if not update_from_main else "autoupdate-btn"
         autoupdate_form = (
             update_ready_banner
             + "<div class='autoupdate-row'>"
@@ -5306,6 +5334,14 @@ def _render_setup_html(
             "<input type='hidden' name='autoupdate_enabled' value='0'>"
             "<button type='submit' class='" + disable_btn_class + "'>Disable autoupdate</button></form>"
             "<span class='autoupdate-hint'>Check on each visit, apply if newer.</span></div>"
+            + "<div class='autoupdate-row'>"
+            "<form method='post' action='/settings/save-update-from-main' class='autoupdate-form' style='display:inline;'>"
+            "<input type='hidden' name='update_from_main' value='1'>"
+            "<button type='submit' class='" + from_main_enable_class + "'>Update from main</button></form>"
+            " <form method='post' action='/settings/save-update-from-main' class='autoupdate-form' style='display:inline;'>"
+            "<input type='hidden' name='update_from_main' value='0'>"
+            "<button type='submit' class='" + from_main_disable_class + "'>Update from release</button></form>"
+            "<span class='autoupdate-hint'>Use main branch instead of latest release (for testing).</span></div>"
         )
         package_update_btns = autoupdate_form
         if has_update_helper:
@@ -8477,6 +8513,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
             if self.path not in (
                 "/settings/save-instance-name",
                 "/settings/save-autoupdate",
+                "/settings/save-update-from-main",
                 "/settings/request-autoupdate-on-logout",
                 "/settings/recheck-updates",
                 "/save",
@@ -8534,6 +8571,23 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     append_ui_log(f"settings | autoupdate {'enabled' if enabled else 'disabled'}")
                     self._reply_html(_render_setup_html(
                         security_message="Autoupdate " + ("enabled" if enabled else "disabled") + ".",
+                        ui_view=ui_view,
+                        ssl_warning=ssl_warning,
+                        open_server_panel="package",
+                    ))
+                    return
+                if self.path == "/settings/save-update-from-main":
+                    raw_len = int(self.headers.get("Content-Length", "0"))
+                    body = self.rfile.read(raw_len).decode("utf-8", errors="ignore")
+                    form = parse_qs(body, keep_blank_values=True)
+                    vals = form.get("update_from_main", []) or []
+                    enabled = "1" in vals
+                    cfg = load_config()
+                    cfg["update_from_main"] = enabled
+                    save_config(cfg, reapply_cron=False)
+                    append_ui_log(f"settings | update from main {'enabled' if enabled else 'disabled'}")
+                    self._reply_html(_render_setup_html(
+                        security_message="Update from main " + ("enabled" if enabled else "disabled") + ".",
                         ui_view=ui_view,
                         ssl_warning=ssl_warning,
                         open_server_panel="package",
@@ -8635,7 +8689,8 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                         ))
                         return
                     try:
-                        rc, out = _run_cmd([str(helper), script_dir, "update", "no-restart"], timeout_sec=30)
+                        cfg = load_config()
+                        rc, out = _run_cmd([str(helper), script_dir, "update", "no-restart"], timeout_sec=30, env=_update_helper_env(cfg))
                         if rc != 0:
                             self._reply_html(_render_setup_html(
                                 error=f"Update failed: {out.strip() or 'exit ' + str(rc)}",
@@ -9142,7 +9197,9 @@ def main_menu() -> str:
     print("  5) Schedule automatic checks (cron)")
     print("  6) Test push (send test message to Kuma)")
     print("  7) Toggle debug mode")
-    print("  8) Exit")
+    from_main = cfg.get("update_from_main", False)
+    print(f"  8) Toggle update from main (testing) — {('ON' if from_main else 'OFF')}")
+    print("  9) Exit")
     print("=" * 50)
     return prompt("Choice", "1").strip() or "1"
 
@@ -9165,6 +9222,8 @@ def main() -> int:
         elif choice == "7":
             toggle_debug()
         elif choice == "8":
+            toggle_update_from_main()
+        elif choice == "9":
             print("Bye.")
             return 0
         else:
