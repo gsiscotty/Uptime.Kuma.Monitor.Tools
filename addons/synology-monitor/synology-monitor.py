@@ -129,6 +129,9 @@ def _default_auth_state() -> Dict[str, Any]:
         "failed_attempts": 0,
         "lockout_until": 0,
         "session_secret": secrets.token_hex(32),
+        "last_login_ip": "",
+        "last_login_at": 0,
+        "login_history": [],
     }
 
 
@@ -274,6 +277,62 @@ def _register_auth_success(auth: Dict[str, Any]) -> None:
     _save_auth_state(auth)
 
 
+def _append_login_event(auth: Dict[str, Any], ip: str, state: str) -> None:
+    events = auth.get("login_history", [])
+    if not isinstance(events, list):
+        events = []
+    events.append({"ts": int(time.time()), "ip": str(ip or "unknown"), "state": str(state or "unknown")})
+    auth["login_history"] = events[-20:]
+
+
+def _detect_primary_server_ip() -> str:
+    """Best-effort primary local IP for UI display."""
+    candidates: List[str] = []
+    try:
+        host = socket.gethostname()
+        for info in socket.getaddrinfo(host, None):
+            if len(info) < 5 or not info[4]:
+                continue
+            ip = str(info[4][0])
+            if ip and ip not in candidates:
+                candidates.append(ip)
+    except Exception:
+        pass
+    for ip in candidates:
+        if "." in ip and not ip.startswith("127."):
+            return ip
+    for ip in candidates:
+        if ":" in ip and ip != "::1":
+            return ip
+    return candidates[0] if candidates else "n/a"
+
+
+def _list_system_ips() -> List[str]:
+    ips: List[str] = []
+    rc, out = _run_cmd(["ip", "-o", "addr", "show"], timeout_sec=5)
+    if rc == 0 and out.strip():
+        for ln in out.splitlines():
+            m = re.search(r"\sinet6?\s+([0-9a-fA-F\.:]+)/\d+", ln)
+            if not m:
+                continue
+            ip = m.group(1).strip()
+            if ip and ip not in ips:
+                ips.append(ip)
+        if ips:
+            return ips
+    try:
+        host = socket.gethostname()
+        for info in socket.getaddrinfo(host, None):
+            if len(info) < 5 or not info[4]:
+                continue
+            ip = str(info[4][0]).strip()
+            if ip and ip not in ips:
+                ips.append(ip)
+    except Exception:
+        pass
+    return ips
+
+
 def _sign_payload(payload: Dict[str, Any], secret: str) -> str:
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     b64 = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
@@ -329,6 +388,87 @@ def _count_unused_recovery(auth: Dict[str, Any]) -> int:
     if not isinstance(hashes, list):
         return 0
     return len([x for x in hashes if isinstance(x, dict) and not bool(x.get("used"))])
+
+
+GITHUB_REPO = "gsiscotty/Uptime.Kuma.Monitor.Tools"
+UPDATE_CHECK_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
+
+def _get_update_check_path() -> Path:
+    return get_runtime_data_dir() / "synology-update-check.json"
+
+
+def _version_tuple(version: str) -> Tuple[int, ...]:
+    """Parse '1.0.0-0055' or 'v1.0.0-0055' to (1, 0, 0, 55) for comparison."""
+    s = str(version or "").strip().lstrip("vV")
+    if not s:
+        return (0, 0, 0, 0)
+    main, _, build = s.partition("-")
+    parts = [int(x or 0) for x in re.split(r"[.]", main)[:3]]
+    while len(parts) < 3:
+        parts.append(0)
+    try:
+        parts.append(int(build.strip()) if build.strip() else 0)
+    except ValueError:
+        parts.append(0)
+    return tuple(parts[:4])
+
+
+def _run_update_check() -> None:
+    """Fetch latest release from GitHub, compare with VERSION, save result. Runs in background."""
+    result: Dict[str, Any] = {"checked_at": int(time.time()), "error": None, "latest_version": None, "update_available": False, "download_url": None}
+    try:
+        req = http.client.HTTPSConnection("api.github.com", timeout=10)
+        req.request("GET", f"/repos/{GITHUB_REPO}/releases/latest", headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "synology-monitor"})
+        resp = req.getresponse()
+        data = resp.read().decode("utf-8", errors="ignore")
+        req.close()
+        if resp.status != 200:
+            result["error"] = f"HTTP {resp.status}"
+            _save_update_check_result(result)
+            return
+        obj = json.loads(data)
+        tag = str(obj.get("tag_name", "") or "").strip().lstrip("vV")
+        if not tag:
+            result["error"] = "No tag_name in response"
+            _save_update_check_result(result)
+            return
+        result["latest_version"] = tag
+        current = _version_tuple(VERSION)
+        latest = _version_tuple(tag)
+        result["update_available"] = latest > current
+        if result["update_available"]:
+            for asset in obj.get("assets", []) or []:
+                if isinstance(asset, dict) and str(asset.get("name", "")).endswith("synology-monitor-basic.spk"):
+                    result["download_url"] = str(asset.get("browser_download_url", "") or "").strip()
+                    break
+    except Exception as e:
+        result["error"] = str(e) if str(e) else type(e).__name__
+    _save_update_check_result(result)
+
+
+def _save_update_check_result(result: Dict[str, Any]) -> None:
+    path = _get_update_check_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.parent / ".synology-update-check.json.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2)
+        os.replace(str(tmp), str(path))
+    except Exception:
+        pass
+
+
+def _load_update_check_result() -> Dict[str, Any]:
+    path = _get_update_check_path()
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 
 def get_config_path() -> Path:
@@ -4215,6 +4355,78 @@ def _render_setup_html(
         )
     overview_html = "".join(channel_cards)
 
+    # Current Server info for overview
+    local_source_name = browser_instance_name or "synology-agent"
+    server_ip = _detect_primary_server_ip()
+    now_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    last_login_ip = str(auth_state.get("last_login_ip", "") or "").strip() or "n/a"
+    last_login_at_ts = int(auth_state.get("last_login_at", 0) or 0)
+    last_login_at_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_login_at_ts)) if last_login_at_ts else "n/a"
+    login_events = auth_state.get("login_history", []) or []
+    if not isinstance(login_events, list):
+        login_events = []
+    login_lines: List[str] = []
+    for ev in reversed(login_events[-10:]):
+        if isinstance(ev, dict):
+            ts = ev.get("ts", 0) or 0
+            ip = ev.get("ip", "unknown")
+            state = ev.get("state", "unknown")
+            ts_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts else "?"
+            login_lines.append(f"{ts_str}  {ip}  {state}")
+    login_history_text = "\n".join(login_lines) if login_lines else "No login events recorded."
+    all_ips = _list_system_ips()
+    ip_list_text = "\n".join(all_ips) if all_ips else "No IP addresses detected."
+    source_scope_text = f"Viewing local source: {local_source_name}."
+    repo_url = "https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools"
+    update_hint = "Reinstall via Package Center, script, or download SPK from GitHub releases."
+    update_check = _load_update_check_result()
+    update_available = bool(update_check.get("update_available"))
+    latest_version = str(update_check.get("latest_version", "") or "").strip() or None
+    update_check_error = str(update_check.get("error", "") or "").strip() or None
+    update_checked_at = int(update_check.get("checked_at", 0) or 0)
+    update_checked_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(update_checked_at)) if update_checked_at else None
+    update_download_url = str(update_check.get("download_url", "") or "").strip() or None
+    package_badge = ""
+    if update_available and latest_version:
+        package_badge = f" <span class='update-badge'>Update: {html.escape(latest_version)}</span>"
+    package_panel_lines: List[str] = []
+    if update_checked_text:
+        package_panel_lines.append(f"Last checked: {update_checked_text}")
+    if update_check_error:
+        package_panel_lines.append(f"Check error: {update_check_error}")
+    if update_available and latest_version:
+        package_panel_lines.append(f"Update available: {latest_version} (current: {VERSION})")
+        if update_download_url:
+            package_panel_lines.append(f"Download: {update_download_url}")
+    elif latest_version and not update_available:
+        package_panel_lines.append(f"Up to date ({VERSION})")
+    if not package_panel_lines:
+        package_panel_lines.append("Update check runs on login. Log in to see status.")
+    package_panel_lines.append("")
+    package_panel_lines.append(update_hint)
+    package_panel_html = "<pre>" + html.escape("\n".join(package_panel_lines)) + "</pre>"
+    package_download_btn = ""
+    if update_available and update_download_url:
+        package_download_btn = f"<div class='button-row'><a class='btn-inline' href='{html.escape(update_download_url)}' target='_blank' rel='noopener noreferrer'>Download SPK ({html.escape(latest_version)})</a></div>"
+    server_info_card_html = (
+        "<div class='server-info-grid'>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='name'><span class='muted'>Name</span><strong>{html.escape(local_source_name)}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='ip'><span class='muted'>IP</span><strong>{html.escape(server_ip)}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='time'><span class='muted'>Time</span><strong>{html.escape(now_text)}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='package'><span class='muted'>Package Version</span><strong>{html.escape(VERSION)}{package_badge}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='login'><span class='muted'>Last Login Source IP</span><strong>{html.escape(last_login_ip)}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='login-time'><span class='muted'>Last Login Time</span><strong>{html.escape(last_login_at_text)}</strong></button>"
+        "</div>"
+        "<div class='server-action-panels'>"
+        f"<div class='card server-action-panel' data-server-panel='name'><h4>Change server name</h4><form method='post' action='/settings/save-instance-name'><label>Instance Name</label><input name='instance_name' value='{html.escape(str(cfg.get('instance_name', '') or ''))}' placeholder='e.g. GSIARR01-AGENT'><div class='button-row'><button type='submit'>Save name</button></div></form></div>"
+        f"<div class='card server-action-panel' data-server-panel='ip'><h4>System IP addresses</h4><pre>{html.escape(ip_list_text)}</pre></div>"
+        f"<div class='card server-action-panel' data-server-panel='time'><h4>Time</h4><pre>Current time: {html.escape(now_text)}\n(System time on this NAS)</pre></div>"
+        f"<div class='card server-action-panel' data-server-panel='package'><h4>Package update</h4><div class='button-row'><a class='btn-inline' href='{html.escape(repo_url)}' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a></div>{package_download_btn}{package_panel_html}</div>"
+        f"<div class='card server-action-panel' data-server-panel='login'><h4>Recent login events (IP + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
+        f"<div class='card server-action-panel' data-server-panel='login-time'><h4>Recent login events (time + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
+        "</div>"
+    )
+
     peer_role = str(cfg.get("peer_role", "standalone") or "standalone").lower()
 
     # Setup steps with integrated screenshots.
@@ -4477,6 +4689,11 @@ def _render_setup_html(
     )
     overview_view_html = f"""
       <div class="card">
+        <h3>Current Server <span class="badge muted-badge">{html.escape(local_source_name)}</span></h3>
+        <div class="muted" style="margin-bottom:8px;">{html.escape(source_scope_text)}</div>
+        {server_info_card_html}
+      </div>
+      <div class="card">
         <h3>Monitoring Overview</h3>
         <div class="overview-grid">{overview_html}</div>
       </div>
@@ -4656,6 +4873,16 @@ def _render_setup_html(
     .overview-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; margin-top: 12px; }}
     .overview-card {{ border: 1px solid var(--border); border-radius: 10px; background: var(--card-soft); padding: 10px; }}
     .overview-card.hl-channel {{ border-color: #4c8ff6; box-shadow: 0 0 0 1px rgba(76,143,246,0.45) inset; }}
+    .server-info-grid {{ display:grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap:8px; }}
+    .server-info-item {{ border:1px solid var(--border); border-radius:10px; background:var(--card-soft); padding:10px; display:flex; flex-direction:column; gap:4px; }}
+    .server-info-action {{ text-align:left; width:100%; cursor:pointer; transition:all .16s ease; }}
+    .server-info-action:hover {{ border-color:#4c8ff6; background:rgba(76,143,246,.08); }}
+    .server-action-panels {{ margin-top:10px; }}
+    .server-action-panel {{ display:none; border-color:rgba(76,143,246,.3); }}
+    .server-action-panel.open {{ display:block; }}
+    .btn-inline {{ display:inline-block; padding:9px 14px; border:1px solid #36517a; border-radius:8px; text-decoration:none; color:#c8dbf8; font-weight:600; }}
+    .server-info-item strong {{ font-size:13px; color:#d9e8ff; }}
+    .update-badge {{ display:inline-block; margin-left:6px; padding:2px 6px; font-size:11px; font-weight:600; color:#4c8ff6; background:rgba(76,143,246,.15); border-radius:6px; }}
     .gauge-link {{ text-decoration: none; }}
     .gauge {{ width: 140px; height: 140px; border-radius: 50%; margin: 8px auto; position: relative; background: conic-gradient(var(--gauge-color, var(--unknown)) calc(var(--pct, 0) * 1%), #263143 0); }}
     .gauge::after {{ content: ""; position: absolute; inset: 14px; border-radius: 50%; background: #0f1726; border: 1px solid #30405a; }}
@@ -4912,6 +5139,20 @@ def _render_setup_html(
             window.location.href = a.getAttribute("href");
           }}
         }}, true);
+        document.addEventListener("click", function(ev) {{
+          var b = ev.target && ev.target.closest ? ev.target.closest(".server-info-action[data-server-action]") : null;
+          if (!b) return;
+          var key = b.getAttribute("data-server-action");
+          var panel = document.querySelector(".server-action-panel[data-server-panel='" + key + "']");
+          if (!panel) return;
+          document.querySelectorAll(".server-action-panel.open").forEach(function(p) {{
+            if (p !== panel) p.classList.remove("open");
+          }});
+          panel.classList.toggle("open");
+          if (panel.classList.contains("open")) {{
+            panel.scrollIntoView({{ behavior: "smooth", block: "nearest" }});
+          }}
+        }});
         // Intercept POST forms: fetch and update page without reload (except auth, danger, exports)
         document.addEventListener("submit", async function(ev) {{
           var form = ev && ev.target ? ev.target : null;
@@ -5972,6 +6213,20 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
             for k, m in parsed.items():
                 out[k] = m.value
             return out
+
+        def _client_source_ip(self) -> str:
+            xff = str(self.headers.get("X-Forwarded-For", "") or "").strip()
+            if xff:
+                first = xff.split(",")[0].strip()
+                if first:
+                    return first
+            xrip = str(self.headers.get("X-Real-IP", "") or "").strip()
+            if xrip:
+                return xrip
+            try:
+                return str(self.client_address[0] or "").strip() or "unknown"
+            except Exception:
+                return "unknown"
 
         def _ssl_warning_text(self) -> str:
             if isinstance(self.connection, ssl.SSLSocket):
@@ -7056,6 +7311,12 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                         self._reply_html(_render_auth_verify_page(error="Invalid authenticator code.", ssl_warning=ssl_warning))
                         return
                     _register_auth_success(auth)
+                    client_ip = self._client_source_ip()
+                    auth["last_login_ip"] = client_ip
+                    auth["last_login_at"] = int(time.time())
+                    _append_login_event(auth, client_ip, "2fa")
+                    _save_auth_state(auth)
+                    threading.Thread(target=_run_update_check, daemon=True).start()
                     sess = _sign_payload(
                         {"auth": True, "exp": int(time.time()) + AUTH_SESSION_TTL_SEC},
                         str(auth.get("session_secret", "")),
@@ -7078,6 +7339,12 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                         self._reply_html(_render_auth_recovery_page(error="Invalid or already used recovery code.", ssl_warning=ssl_warning))
                         return
                     _register_auth_success(auth)
+                    client_ip = self._client_source_ip()
+                    auth["last_login_ip"] = client_ip
+                    auth["last_login_at"] = int(time.time())
+                    _append_login_event(auth, client_ip, "recovery")
+                    _save_auth_state(auth)
+                    threading.Thread(target=_run_update_check, daemon=True).start()
                     sess = _sign_payload(
                         {"auth": True, "exp": int(time.time()) + AUTH_SESSION_TTL_SEC},
                         str(auth.get("session_secret", "")),

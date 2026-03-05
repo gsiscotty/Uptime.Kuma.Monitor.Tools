@@ -115,6 +115,8 @@ BRAND_FAVICON_URL = "https://www.easysystems.ch/Themes/essys_v2-v1_19-08-2025/fa
 BRAND_AUTHOR = "Konrad von Burg"
 BRAND_COPYRIGHT = "Copyright (c) 2026"
 REPO_URL = "https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools"
+GITHUB_REPO = "gsiscotty/Uptime.Kuma.Monitor.Tools"
+AUTOUPDATE_CHECK_INTERVAL_SEC = 6 * 3600  # Max once per 6 hours
 PRODUCT_DESC = (
     "Checks Unix host SMART and storage health, provides guided elevated-access setup and diagnostics, "
     "and pushes monitor status to Uptime Kuma."
@@ -1635,6 +1637,114 @@ def get_backup_helper_script_path() -> Path:
 
 def get_smart_helper_script_path() -> Path:
     return get_script_path().parent / "smart-helper.sh"
+
+
+def get_update_helper_path() -> Path:
+    return get_script_path().parent / "update-helper.sh"
+
+
+def _get_update_check_path() -> Path:
+    return get_runtime_data_dir() / "unix-update-check.json"
+
+
+def _version_tuple(version: str) -> Tuple[int, ...]:
+    """Parse '1.0.0-0055' or 'v1.0.0-0055' to (1, 0, 0, 55) for comparison."""
+    s = str(version or "").strip().lstrip("vV")
+    if not s:
+        return (0, 0, 0, 0)
+    main, _, build = s.partition("-")
+    parts = [int(x or 0) for x in re.split(r"[.]", main)[:3]]
+    while len(parts) < 3:
+        parts.append(0)
+    try:
+        parts.append(int(build.strip()) if build.strip() else 0)
+    except ValueError:
+        parts.append(0)
+    return tuple(parts[:4])
+
+
+def _run_update_check() -> Dict[str, Any]:
+    """Fetch latest release from GitHub, compare with VERSION. Returns result dict."""
+    result: Dict[str, Any] = {"checked_at": int(time.time()), "error": None, "latest_version": None, "update_available": False}
+    try:
+        req = http.client.HTTPSConnection("api.github.com", timeout=10)
+        req.request("GET", f"/repos/{GITHUB_REPO}/releases/latest", headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "unix-monitor"})
+        resp = req.getresponse()
+        data = resp.read().decode("utf-8", errors="ignore")
+        req.close()
+        if resp.status != 200:
+            result["error"] = f"HTTP {resp.status}"
+            return result
+        obj = json.loads(data)
+        tag = str(obj.get("tag_name", "") or "").strip().lstrip("vV")
+        if not tag:
+            result["error"] = "No tag_name in response"
+            return result
+        result["latest_version"] = tag
+        current = _version_tuple(VERSION)
+        latest = _version_tuple(tag)
+        result["update_available"] = latest > current
+    except Exception as e:
+        result["error"] = str(e) if str(e) else type(e).__name__
+    return result
+
+
+def _save_update_check_result(result: Dict[str, Any]) -> None:
+    path = _get_update_check_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.parent / ".unix-update-check.json.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2)
+        os.replace(str(tmp), str(path))
+    except Exception:
+        pass
+
+
+def _load_update_check_result() -> Dict[str, Any]:
+    path = _get_update_check_path()
+    if not path.exists():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _maybe_run_autoupdate() -> None:
+    """Background: if autoupdate enabled, check for updates; if available, run update. Throttled."""
+    try:
+        cfg = load_config()
+        if not cfg.get("autoupdate_enabled"):
+            return
+        last = _load_update_check_result()
+        last_ts = int(last.get("checked_at", 0) or 0)
+        if time.time() - last_ts < AUTOUPDATE_CHECK_INTERVAL_SEC:
+            return
+        result = _run_update_check()
+        _save_update_check_result(result)
+        if not result.get("update_available"):
+            return
+        helper = get_update_helper_path()
+        if not helper.exists():
+            return
+        script_dir = str(get_script_path().parent)
+        rc, out = _run_cmd([str(helper), script_dir, "update", "no-restart"], timeout_sec=30)
+        if rc != 0:
+            append_ui_log(f"autoupdate | failed: {out.strip() or rc}")
+            return
+        append_ui_log(f"autoupdate | updated to {result.get('latest_version', '?')}")
+
+        def _delayed_restart() -> None:
+            time.sleep(2)
+            for u in ("unix-monitor-ui.service", "unix-monitor-scheduler.timer", "unix-monitor-smart-helper.timer", "unix-monitor-backup-helper.timer", "unix-monitor-system-log-helper.timer"):
+                _run_cmd(["systemctl", "restart", u], timeout_sec=10)
+
+        threading.Thread(target=_delayed_restart, daemon=True).start()
+    except Exception:
+        pass
 
 
 def get_task_guide_images() -> Dict[str, Path]:
@@ -4963,6 +5073,26 @@ def _render_setup_html(
     update_curl_cmd = (
         "curl -sSL https://raw.githubusercontent.com/gsiscotty/Uptime.Kuma.Monitor.Tools/main/addons/unix-monitor/install.sh | sudo bash"
     )
+    has_update_helper = get_update_helper_path().exists()
+    has_backup = (get_script_path().parent / "unix-monitor.py.prev").exists()
+    autoupdate_enabled = bool(cfg.get("autoupdate_enabled", False))
+    package_update_btns = ""
+    if not source_is_remote:
+        autoupdate_form = (
+            "<form method='post' action='/settings/save-autoupdate' style='display:inline;margin-bottom:8px;'>"
+            "<input type='hidden' name='autoupdate_enabled' value='0'>"
+            f"<label style='display:flex;align-items:center;gap:6px;cursor:pointer;'>"
+            f"<input type='checkbox' name='autoupdate_enabled' value='1'"
+            + (" checked" if autoupdate_enabled else "")
+            + " onchange='this.form.submit()'> Enable autoupdate (check on each visit, apply if newer)</label></form>"
+        )
+        package_update_btns = "<div style='margin-bottom:8px;'>" + autoupdate_form + "</div>"
+        if has_update_helper:
+            package_update_btns += "<div class='button-row' style='margin-bottom:8px;'><form method='post' action='/self-update' style='display:inline;' onsubmit='return confirm(\"Update to latest version? Config and data will be preserved. If update fails, previous version is restored.\");'><button type='submit' class='btn-inline'>Update now</button></form>"
+        if has_backup and has_update_helper:
+            package_update_btns += " <form method='post' action='/self-rollback' style='display:inline;' onsubmit='return confirm(\"Restore previous version?\");'><button type='submit' class='btn-inline' style='border-color:#ef4444;color:#ef4444;'>Rollback</button></form>"
+        if "button-row" in package_update_btns:
+            package_update_btns += "</div>"
     ip_list_text = "\n".join(all_ips) if all_ips else "No IP addresses detected."
     login_history_text = "\n".join(login_lines)
     server_info_card_html = (
@@ -4978,7 +5108,7 @@ def _render_setup_html(
         f"<div class='card server-action-panel' data-server-panel='name'><h4>Change server name</h4><form method='post' action='/settings/save-instance-name'><label>Instance Name</label><input name='instance_name' value='{html.escape(str(cfg.get('instance_name', '') or ''))}' placeholder='e.g. HQ-NAS'><div class='button-row'><button type='submit'>Save name</button></div></form></div>"
         f"<div class='card server-action-panel' data-server-panel='ip'><h4>System IP addresses</h4><pre>{html.escape(ip_list_text)}</pre></div>"
         f"<div class='card server-action-panel' data-server-panel='time'><h4>Time sync details</h4><pre>Current time: {html.escape(now_text)}\nLast peer sync: {html.escape(peer_last_sync_text)}\nNTP synced: {html.escape(ntp_info.get('synced', 'unknown'))}\nNTP service: {html.escape(ntp_info.get('service', 'unknown'))}\nNTP source: {html.escape(ntp_info.get('source', 'unknown'))}\n\n{html.escape(ntp_info.get('detail', ''))}</pre></div>"
-        f"<div class='card server-action-panel' data-server-panel='package'><h4>Package update</h4><div class='button-row'><a class='btn-inline' href='{html.escape(REPO_URL)}' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a></div><pre>{html.escape(update_curl_cmd)}</pre><div class='muted'>{html.escape(source_scope_text)}</div></div>"
+        f"<div class='card server-action-panel' data-server-panel='package'><h4>Package update</h4>{package_update_btns}<div class='button-row'><a class='btn-inline' href='{html.escape(REPO_URL)}' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a></div><pre>{html.escape(update_curl_cmd)}</pre><div class='muted'>Update: backs up, downloads latest, validates, replaces. On failure restores previous. Config and data preserved.</div><div class='muted'>{html.escape(source_scope_text)}</div></div>"
         f"<div class='card server-action-panel' data-server-panel='login'><h4>Recent login events (IP + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
         f"<div class='card server-action-panel' data-server-panel='login-time'><h4>Recent login events (time + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
         "</div>"
@@ -5455,7 +5585,7 @@ def _render_setup_html(
           if ((form.getAttribute("method") || "get").toLowerCase() !== "post") return;
           if (form.id === "monitor-form") return;
           var act = (form.getAttribute("action") || "") + "";
-          var skip = /\\/(auth\\/(logout|login|setup|verify-2fa|recovery|import|export))|\\/danger-(restart|reset)/.test(act) || (form.enctype || "").toLowerCase().indexOf("multipart") >= 0;
+          var skip = /\\/(auth\\/(logout|login|setup|verify-2fa|recovery|import|export))|\\/danger-(restart|reset)|\\/self-(update|rollback)/.test(act) || (form.enctype || "").toLowerCase().indexOf("multipart") >= 0;
           if (skip) return;
           ev.preventDefault();
           ev.stopImmediatePropagation();
@@ -6955,6 +7085,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
             diagnose = (qs.get("diagnose", ["0"])[0] or "0").strip().lower() in ("1", "true", "yes")
             if highlight not in ("smart", "storage", "ping", "port", "dns", "backup"):
                 highlight = ""
+            threading.Thread(target=_maybe_run_autoupdate, daemon=True).start()
             self._reply_html(
                 _render_setup_html(
                     log_filter=log_filter,
@@ -7891,6 +8022,7 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 return
             if self.path not in (
                 "/settings/save-instance-name",
+                "/settings/save-autoupdate",
                 "/save",
                 "/run-check",
                 "/run-check-monitor",
@@ -7912,6 +8044,8 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                 "/auto-create-task",
                 "/danger-restart",
                 "/danger-reset",
+                "/self-update",
+                "/self-rollback",
             ):
                 self._reply_html(_render_setup_html(error="Unsupported endpoint"), 404)
                 return
@@ -7928,6 +8062,22 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                     self._reply_html(_render_setup_html(
                         security_message="Instance name saved.",
                         ui_view="settings",
+                        ssl_warning=ssl_warning,
+                    ))
+                    return
+                if self.path == "/settings/save-autoupdate":
+                    raw_len = int(self.headers.get("Content-Length", "0"))
+                    body = self.rfile.read(raw_len).decode("utf-8", errors="ignore")
+                    form = parse_qs(body, keep_blank_values=True)
+                    vals = form.get("autoupdate_enabled", []) or []
+                    enabled = "1" in vals
+                    cfg = load_config()
+                    cfg["autoupdate_enabled"] = enabled
+                    save_config(cfg, reapply_cron=False)
+                    append_ui_log(f"settings | autoupdate {'enabled' if enabled else 'disabled'}")
+                    self._reply_html(_render_setup_html(
+                        security_message="Autoupdate " + ("enabled" if enabled else "disabled") + ".",
+                        ui_view=ui_view,
                         ssl_warning=ssl_warning,
                     ))
                     return
@@ -7961,6 +8111,87 @@ def run_setup_ui(host: str = "0.0.0.0", port: int = 8787) -> int:
                             ssl_warning=ssl_warning,
                         )
                     )
+                    return
+                if self.path == "/self-update":
+                    helper = get_update_helper_path()
+                    script_dir = str(get_script_path().parent)
+                    if not helper.exists():
+                        self._reply_html(_render_setup_html(
+                            error="Update helper not found. Reinstall to add self-update.",
+                            ui_view=ui_view,
+                            ssl_warning=ssl_warning,
+                        ))
+                        return
+                    try:
+                        rc, out = _run_cmd([str(helper), script_dir, "update", "no-restart"], timeout_sec=30)
+                        if rc != 0:
+                            self._reply_html(_render_setup_html(
+                                error=f"Update failed: {out.strip() or 'exit ' + str(rc)}",
+                                action_output=out,
+                                ui_view=ui_view,
+                                ssl_warning=ssl_warning,
+                            ))
+                            return
+                        append_ui_log("self-update | completed successfully")
+                        self._reply_html(_render_setup_html(
+                            security_message="Update complete. Config and data preserved. Restarting services…",
+                            action_output=out,
+                            ui_view=ui_view,
+                            ssl_warning=ssl_warning,
+                        ))
+                        def _delayed_restart() -> None:
+                            time.sleep(2)
+                            for u in ("unix-monitor-ui.service", "unix-monitor-scheduler.timer", "unix-monitor-smart-helper.timer", "unix-monitor-backup-helper.timer", "unix-monitor-system-log-helper.timer"):
+                                _run_cmd(["systemctl", "restart", u], timeout_sec=10)
+                        threading.Thread(target=_delayed_restart, daemon=True).start()
+                    except Exception as e:
+                        self._reply_html(_render_setup_html(
+                            error=f"Update failed: {type(e).__name__}: {e}",
+                            ui_view=ui_view,
+                            ssl_warning=ssl_warning,
+                        ))
+                    return
+                if self.path == "/self-rollback":
+                    helper = get_update_helper_path()
+                    script_dir = str(get_script_path().parent)
+                    backup_path = Path(script_dir) / "unix-monitor.py.prev"
+                    if not helper.exists():
+                        self._reply_html(_render_setup_html(
+                            error="Update helper not found.",
+                            ui_view=ui_view,
+                            ssl_warning=ssl_warning,
+                        ))
+                        return
+                    if not backup_path.exists():
+                        self._reply_html(_render_setup_html(
+                            error="No backup found. Run an update first to create one.",
+                            ui_view=ui_view,
+                            ssl_warning=ssl_warning,
+                        ))
+                        return
+                    try:
+                        rc, out = _run_cmd([str(helper), script_dir, "rollback"], timeout_sec=30)
+                        if rc != 0:
+                            self._reply_html(_render_setup_html(
+                                error=f"Rollback failed: {out.strip() or 'exit ' + str(rc)}",
+                                action_output=out,
+                                ui_view=ui_view,
+                                ssl_warning=ssl_warning,
+                            ))
+                            return
+                        append_ui_log("self-rollback | restored from backup")
+                        self._reply_html(_render_setup_html(
+                            security_message="Rollback complete. Restored previous version. Restarting services…",
+                            action_output=out,
+                            ui_view=ui_view,
+                            ssl_warning=ssl_warning,
+                        ))
+                    except Exception as e:
+                        self._reply_html(_render_setup_html(
+                            error=f"Rollback failed: {type(e).__name__}: {e}",
+                            ui_view=ui_view,
+                            ssl_warning=ssl_warning,
+                        ))
                     return
                 if self.path == "/run-check":
                     output = _ui_run_check_now()

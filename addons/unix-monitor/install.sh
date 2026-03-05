@@ -10,6 +10,9 @@ SCRIPT_RAW_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${SCRIPT_REM
 UNINSTALL_NAME="uninstall.sh"
 UNINSTALL_REMOTE_PATH="addons/unix-monitor/${UNINSTALL_NAME}"
 UNINSTALL_RAW_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${UNINSTALL_REMOTE_PATH}"
+UPDATE_HELPER_NAME="update-helper.sh"
+UPDATE_HELPER_REMOTE_PATH="addons/unix-monitor/${UPDATE_HELPER_NAME}"
+UPDATE_HELPER_RAW_URL="https://raw.githubusercontent.com/${REPO}/${BRANCH}/${UPDATE_HELPER_REMOTE_PATH}"
 DEFAULT_INSTALL_DIR="/opt/unix-monitor"
 MIN_PYTHON_MAJOR=3
 MIN_PYTHON_MINOR=8
@@ -384,20 +387,35 @@ else
     wget -qO "${UNINSTALL_TARGET}" "${UNINSTALL_RAW_URL}"
 fi
 
-if [ ! -s "${TARGET}" ] || [ ! -s "${UNINSTALL_TARGET}" ]; then
+UPDATE_HELPER_TARGET="${INSTALL_DIR}/${UPDATE_HELPER_NAME}"
+info "Downloading ${UPDATE_HELPER_NAME}..."
+if [ "${DOWNLOADER}" = "curl" ]; then
+    curl -fsSL "${UPDATE_HELPER_RAW_URL}" -o "${UPDATE_HELPER_TARGET}"
+else
+    wget -qO "${UPDATE_HELPER_TARGET}" "${UPDATE_HELPER_RAW_URL}"
+fi
+
+if [ ! -s "${TARGET}" ] || [ ! -s "${UNINSTALL_TARGET}" ] || [ ! -s "${UPDATE_HELPER_TARGET}" ]; then
     err "Download failed."
     exit 1
 fi
+UPDATE_HELPER_FIRST="$(sed -n '1p' "${UPDATE_HELPER_TARGET}")"
+if [[ "${UPDATE_HELPER_FIRST}" != "#!/bin/bash"* ]]; then
+    err "Downloaded update-helper is not the expected script."
+    rm -f "${TARGET}" "${UNINSTALL_TARGET}" "${UPDATE_HELPER_TARGET}"
+    exit 1
+fi
+chmod 700 "${UPDATE_HELPER_TARGET}"
 FIRST_LINE="$(sed -n '1p' "${TARGET}")"
 if [[ "${FIRST_LINE}" != "#!/usr/bin/env python3"* ]]; then
     err "Downloaded launcher is not the expected script."
-    rm -f "${TARGET}" "${UNINSTALL_TARGET}"
+    rm -f "${TARGET}" "${UNINSTALL_TARGET}" "${UPDATE_HELPER_TARGET}"
     exit 1
 fi
 UNINSTALL_FIRST_LINE="$(sed -n '1p' "${UNINSTALL_TARGET}")"
 if [[ "${UNINSTALL_FIRST_LINE}" != "#!/bin/bash"* ]]; then
     err "Downloaded uninstaller is not the expected script."
-    rm -f "${TARGET}" "${UNINSTALL_TARGET}"
+    rm -f "${TARGET}" "${UNINSTALL_TARGET}" "${UPDATE_HELPER_TARGET}"
     exit 1
 fi
 chmod 700 "${TARGET}" "${UNINSTALL_TARGET}"
