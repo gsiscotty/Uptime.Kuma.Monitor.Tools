@@ -9,7 +9,7 @@ if [ "${UNIX_MONITOR_USE_MAIN:-0}" = "1" ]; then
     UPDATE_CHANNEL="main"
 fi
 if [ "${UPDATE_CHANNEL}" != "main" ] && [ "${UPDATE_CHANNEL}" != "latest" ]; then
-    UPDATE_CHANNEL="latest"
+    UPDATE_CHANNEL=""
 fi
 REF="${BRANCH}"
 
@@ -396,19 +396,29 @@ if [ -f "${INSTALL_DIR}/${SCRIPT_NAME}" ] || [ -f "${INSTALL_DIR}/unix-monitor.j
     EXISTING_INSTALL=1
 fi
 
-if [ -z "${MIGRATE_FROM_LEGACY:-}" ] && [ -t 0 ] && [ -z "${UNIX_MONITOR_UPDATE_CHANNEL:-}" ] && [ "${UNIX_MONITOR_USE_MAIN:-0}" != "1" ]; then
+if [ -z "${MIGRATE_FROM_LEGACY:-}" ]; then
+    if [ ! -r /dev/tty ]; then
+        err "Update source must be selected by user, but no interactive terminal is available."
+        err "Run installer in an interactive shell."
+        exit 1
+    fi
     echo ""
     echo "Update source:"
-    echo "  1) latest release (default)"
+    echo "  1) latest release"
     echo "  2) main branch (testing)"
-    echo -e "Choose source [1]: \c"
-    read_input UPDATE_CHANNEL_CHOICE || true
-    UPDATE_CHANNEL_CHOICE="${UPDATE_CHANNEL_CHOICE:-1}"
-    if [ "${UPDATE_CHANNEL_CHOICE}" = "2" ]; then
-        UPDATE_CHANNEL="main"
-    else
-        UPDATE_CHANNEL="latest"
-    fi
+    while :; do
+        echo -e "Choose source (1 or 2): \c"
+        read_input UPDATE_CHANNEL_CHOICE || true
+        case "${UPDATE_CHANNEL_CHOICE:-}" in
+            1) UPDATE_CHANNEL="latest"; break ;;
+            2) UPDATE_CHANNEL="main"; break ;;
+            *)
+                warn "Selection required. Enter 1 (latest) or 2 (main)."
+                ;;
+        esac
+    done
+elif [ "${UPDATE_CHANNEL}" != "main" ] && [ "${UPDATE_CHANNEL}" != "latest" ]; then
+    UPDATE_CHANNEL="latest"
 fi
 resolve_ref_from_channel
 refresh_download_urls
