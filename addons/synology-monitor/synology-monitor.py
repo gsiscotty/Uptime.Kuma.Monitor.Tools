@@ -4455,7 +4455,7 @@ def _render_setup_html(
     ip_list_text = "\n".join(all_ips) if all_ips else "No IP addresses detected."
     source_scope_text = f"Viewing local source: {local_source_name}."
     repo_url = "https://github.com/gsiscotty/Uptime.Kuma.Monitor.Tools"
-    update_hint = "Reinstall via Package Center, script, or download SPK from GitHub releases."
+    update_hint = "This checker tracks Synology package (SPK) versions. Reinstall via Package Center, script, or download SPK from GitHub releases."
     update_check = _load_update_check_result()
     update_available = bool(update_check.get("update_available"))
     latest_version = str(update_check.get("latest_version", "") or "").strip() or None
@@ -4472,11 +4472,11 @@ def _render_setup_html(
     if update_check_error:
         package_panel_lines.append(f"Check error: {update_check_error}")
     if update_available and latest_version:
-        package_panel_lines.append(f"Update available: {latest_version} (current: {VERSION})")
+        package_panel_lines.append(f"SPK update available: {latest_version} (current SPK: {VERSION})")
         if update_download_url:
             package_panel_lines.append(f"Download: {update_download_url}")
     elif latest_version and not update_available:
-        package_panel_lines.append(f"Up to date ({VERSION})")
+        package_panel_lines.append(f"SPK up to date ({VERSION})")
     if not package_panel_lines:
         package_panel_lines.append("Update check runs on login. Log in to see status.")
     package_panel_lines.append("")
@@ -4486,7 +4486,7 @@ def _render_setup_html(
     if update_available and update_download_url and latest_version:
         update_ready_banner = (
             "<div class='update-ready-banner'>"
-            "<span>New version available (v" + html.escape(latest_version) + "). </span>"
+            "<span>New SPK version available (v" + html.escape(latest_version) + "). </span>"
             "<a class='btn-inline' href='" + html.escape(update_download_url) + "' target='_blank' rel='noopener noreferrer'>Download SPK</a>"
             "</div>"
         )
@@ -4498,7 +4498,7 @@ def _render_setup_html(
         f"<button type='button' class='server-info-item server-info-action' data-server-action='name'><span class='muted'>Name</span><strong>{html.escape(local_source_name)}</strong></button>"
         f"<button type='button' class='server-info-item server-info-action' data-server-action='ip'><span class='muted'>IP</span><strong>{html.escape(server_ip)}</strong></button>"
         f"<button type='button' class='server-info-item server-info-action' data-server-action='time'><span class='muted'>Time</span><strong>{html.escape(now_text)}</strong></button>"
-        f"<button type='button' class='server-info-item server-info-action' data-server-action='package'><span class='muted'>Package Version</span><strong>{html.escape(VERSION)}{package_badge}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='package'><span class='muted'>Synology SPK Version</span><strong>{html.escape(VERSION)}{package_badge}</strong></button>"
         f"<button type='button' class='server-info-item server-info-action' data-server-action='login'><span class='muted'>Last Login Source IP</span><strong>{html.escape(last_login_ip)}</strong></button>"
         f"<button type='button' class='server-info-item server-info-action' data-server-action='login-time'><span class='muted'>Last Login Time</span><strong>{html.escape(last_login_at_text)}</strong></button>"
         "</div>"
@@ -4506,7 +4506,7 @@ def _render_setup_html(
         f"<div class='card server-action-panel' data-server-panel='name'><h4>Change server name</h4><form method='post' action='/settings/save-instance-name'><label>Instance Name</label><input name='instance_name' value='{html.escape(str(cfg.get('instance_name', '') or ''))}' placeholder='e.g. GSIARR01-AGENT'><div class='button-row'><button type='submit'>Save name</button></div></form></div>"
         f"<div class='card server-action-panel' data-server-panel='ip'><h4>System IP addresses</h4><pre>{html.escape(ip_list_text)}</pre></div>"
         f"<div class='card server-action-panel' data-server-panel='time'><h4>Time</h4><pre>Current time: {html.escape(now_text)}\n(System time on this NAS)</pre></div>"
-        f"<div class='card server-action-panel' data-server-panel='package'><h4>Package update</h4>{update_ready_banner}<div class='button-row'><a class='btn-inline' href='{html.escape(repo_url)}' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a></div>{package_download_btn}{package_panel_html}</div>"
+        f"<div class='card server-action-panel' data-server-panel='package'><h4>Synology SPK update</h4>{update_ready_banner}<div class='button-row'><a class='btn-inline' href='{html.escape(repo_url)}' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a></div>{package_download_btn}{package_panel_html}</div>"
         f"<div class='card server-action-panel' data-server-panel='login'><h4>Recent login events (IP + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
         f"<div class='card server-action-panel' data-server-panel='login-time'><h4>Recent login events (time + state)</h4><pre>{html.escape(login_history_text)}</pre></div>"
         "</div>"

@@ -5439,13 +5439,13 @@ def _render_setup_html(
     package_panel_open = " open" if open_server_panel == "package" else ""
     package_panel_html = (
         "<div class='card server-action-panel" + package_panel_open + "' data-server-panel='package'>"
-        "<h4>Package update</h4>"
+        "<h4>Unix runtime update</h4>"
         + package_update_btns
         + "<div class='button-row'>"
         + "<a class='btn-inline' href='" + html.escape(REPO_URL) + "' target='_blank' rel='noopener noreferrer'>Open GitHub repository</a>"
         + (" <form method='post' action='/settings/recheck-updates' style='display:inline;'><button type='submit' class='btn-inline btn-inline-muted'>Recheck for updates</button></form>" if not source_is_remote else "")
         + "</div>"
-        + "<div class='muted'>Selected source: " + html.escape(selected_channel_label) + " | Local: " + html.escape(VERSION) + " | Public (" + html.escape(public_label) + "): " + html.escape(latest_version or "unknown") + " | Status: " + html.escape(update_status_text) + "</div>"
+        + "<div class='muted'>Selected source: " + html.escape(selected_channel_label) + " | Local Unix runtime: " + html.escape(VERSION) + " | Public Unix runtime (" + html.escape(public_label) + "): " + html.escape(latest_version or "unknown") + " | Status: " + html.escape(update_status_text) + "</div>"
         + "<pre>" + html.escape(update_curl_cmd) + "</pre>"
         + "<div class='muted'>Update: backs up, downloads latest, validates, replaces. On failure restores previous. Config and data preserved.</div>"
         + "<div class='muted'>" + html.escape(source_scope_text) + "</div></div>"
@@ -5455,7 +5455,7 @@ def _render_setup_html(
         f"<button type='button' class='server-info-item server-info-action' data-server-action='name'><span class='muted'>Name</span><strong>{html.escape(local_source_name)}</strong></button>"
         f"<button type='button' class='server-info-item server-info-action' data-server-action='ip'><span class='muted'>IP</span><strong>{html.escape(server_ip)}</strong></button>"
         f"<button type='button' class='server-info-item server-info-action' data-server-action='time'><span class='muted'>Time</span><strong>{html.escape(now_text)}</strong></button>"
-        f"<button type='button' class='server-info-item server-info-action' data-server-action='package'><span class='muted'>Package Version</span><strong>{html.escape(VERSION)}</strong></button>"
+        f"<button type='button' class='server-info-item server-info-action' data-server-action='package'><span class='muted'>Unix Runtime Version</span><strong>{html.escape(VERSION)}</strong></button>"
         f"<button type='button' class='server-info-item server-info-action' data-server-action='login'><span class='muted'>Last Login Source IP</span><strong>{html.escape(last_login_ip)}</strong></button>"
         f"<button type='button' class='server-info-item server-info-action' data-server-action='login-time'><span class='muted'>Last Login Time</span><strong>{html.escape(last_login_at_text)}</strong></button>"
         "</div>"
